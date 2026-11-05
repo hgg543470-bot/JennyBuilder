@@ -703,11 +703,14 @@ def _extract_python_symbols(text: str) -> dict:
         return symbols
 
 
-def _extract_brace_blocks(text: str, pattern: re.Pattern, kind_formatter) -> dict:
+def _extract_brace_blocks(text: str, pattern: re.Pattern, kind_formatter, skip_nested: bool = False) -> dict:
     symbols = {}
+    last_end_idx = 0
     for m in pattern.finditer(text):
+        if skip_nested and m.start() < last_end_idx:
+            continue
         name, sig = kind_formatter(m)
-        if not name or name in ("if", "for", "while", "switch", "catch", "synchronized", "function"):
+        if not name or name in ("if", "for", "while", "switch", "catch", "synchronized", "function", "return", "sizeof"):
             continue
         brace_open = text.find("{", m.end() - 1)
         if brace_open == -1:
@@ -726,6 +729,8 @@ def _extract_brace_blocks(text: str, pattern: re.Pattern, kind_formatter) -> dic
                     end_idx = i + 1
                     break
             i += 1
+        if skip_nested and end_idx > last_end_idx:
+            last_end_idx = end_idx
         body = text[m.start():end_idx].strip()
         symbols[name] = {"sig": sig, "body": body}
     return symbols
@@ -745,19 +750,108 @@ def _extract_js_symbols(text: str) -> dict:
         name = m.group(3)
         args = (m.group(4) or m.group(5) or "").strip()
         return name, f"function {name}({args})"
-    return _extract_brace_blocks(text, pat, fmt)
+    return _extract_brace_blocks(text, pat, fmt, skip_nested=False)
 
 
 def _extract_java_symbols(text: str) -> dict:
     pat = re.compile(
-        r"(?:public|private|protected)\s+(?:static\s+)?(?:final\s+)?(?:synchronized\s+)?"
-        r"[A-Za-z0-9_<>\[\].,\s]+?\s+([A-Za-z0-9_]+)\s*\(([^)]*)\)\s*(?:throws\s+[A-Za-z0-9_,\s]+)?\{"
+        r"(?:(?:public|private|protected)\s+(?:static\s+)?(?:final\s+)?(?:synchronized\s+)?[A-Za-z0-9_<>\[\].,\s]+?\s+([A-Za-z0-9_]+)\s*\(([^)]*)\)\s*(?:throws\s+[A-Za-z0-9_,\s]+)?"
+        r"|(?:fun)\s+([A-Za-z0-9_]+)\s*\(([^)]*)\)[^{]*)\{"
+    )
+    def fmt(m):
+        if m.group(1):
+            name = m.group(1).strip()
+            args = " ".join(m.group(2).split())
+            return name, f"{name}({args})"
+        name = m.group(3).strip()
+        args = " ".join((m.group(4) or "").split())
+        return name, f"fun {name}({args})"
+    return _extract_brace_blocks(text, pat, fmt, skip_nested=True)
+
+
+def _extract_go_symbols(text: str) -> dict:
+    pat = re.compile(
+        r"(?m)^func\s+(?:\(\s*[^)]*?\s+\*?([A-Za-z0-9_]+)\s*\)\s*)?([A-Za-z0-9_]+)\s*\(([^)]*)\)[^{]*\{"
+    )
+    def fmt(m):
+        recv = (m.group(1) or "").strip()
+        name = (m.group(2) or "").strip()
+        args = " ".join((m.group(3) or "").split())
+        full_name = f"{recv}.{name}" if recv else name
+        return full_name, f"func {full_name}({args})"
+    return _extract_brace_blocks(text, pat, fmt, skip_nested=True)
+
+
+def _extract_cpp_symbols(text: str) -> dict:
+    pat = re.compile(
+        r"(?m)^(?:(?:static|inline|extern|virtual|constexpr|pub|fn|unsafe)\s+)*"
+        r"(?:[A-Za-z_][A-Za-z0-9_:*&<>\s]*?\s+\*?)?([A-Za-z_][A-Za-z0-9_:]*)\s*\(([^;{}()]*)\)\s*(?:const\s*)?(?:->\s*[^{]+)?\{"
     )
     def fmt(m):
         name = m.group(1).strip()
         args = " ".join(m.group(2).split())
         return name, f"{name}({args})"
-    return _extract_brace_blocks(text, pat, fmt)
+    return _extract_brace_blocks(text, pat, fmt, skip_nested=True)
+
+
+def _extract_elf_so_symbols(data: bytes) -> dict:
+    import struct
+    symbols = {}
+    if not data or len(data) < 64 or data[:4] != b"\x7fELF" or data[4] != 2 or data[5] != 1:
+        return symbols
+    try:
+        e_shoff = struct.unpack_from("<Q", data, 40)[0]
+        e_shentsize, e_shnum = struct.unpack_from("<HH", data, 58)
+        if e_shoff == 0 or e_shnum == 0 or e_shoff + e_shentsize * e_shnum > len(data):
+            return symbols
+        sections = []
+        for i in range(e_shnum):
+            off = e_shoff + i * e_shentsize
+            sections.append(struct.unpack_from("<IIQQQQIIQQ", data, off))
+
+        skip_names = {
+            "_init", "_fini", "__bss_start", "_edata", "_end", "__cxa_finalize",
+            "__cxa_atexit", "deregister_tm_clones", "register_tm_clones",
+            "__do_global_dtors_aux", "frame_dummy"
+        }
+        for sh in sections:
+            sh_type, sh_offset, sh_size, sh_link, sh_entsize = sh[1], sh[4], sh[5], sh[6], sh[9]
+            if sh_type not in (2, 11) or sh_entsize < 24 or sh_link >= len(sections):
+                continue
+            str_sh = sections[sh_link]
+            str_off, str_sz = str_sh[4], str_sh[5]
+            if str_off + str_sz > len(data):
+                continue
+            strtab = data[str_off:str_off + str_sz]
+            count = sh_size // sh_entsize
+            for idx in range(count):
+                s_off = sh_offset + idx * sh_entsize
+                if s_off + 24 > len(data):
+                    break
+                st_name, st_info, st_other, st_shndx, st_value, st_size = struct.unpack_from("<IBBHQQ", data, s_off)
+                st_type = st_info & 0x0F
+                if st_type != 2 or st_shndx == 0 or st_shndx >= len(sections) or st_name >= len(strtab):
+                    continue
+                end_n = strtab.find(b"\x00", st_name)
+                if end_n == -1:
+                    continue
+                fn_name = strtab[st_name:end_n].decode("utf-8", errors="ignore").strip()
+                if not fn_name or fn_name in skip_names or fn_name.startswith(("$", "__")):
+                    continue
+                sec = sections[st_shndx]
+                sec_addr, sec_off = sec[3], sec[4]
+                code_off = sec_off + (st_value - sec_addr)
+                if st_size > 0 and 0 <= code_off and code_off + st_size <= len(data):
+                    fn_hash = hashlib.sha1(data[code_off:code_off + st_size]).hexdigest()[:10]
+                else:
+                    fn_hash = f"val:{st_value}:sz:{st_size}"
+                symbols[fn_name] = {
+                    "sig": f"[.so] {fn_name}() [{st_size} B]",
+                    "body": f"{st_size}:{fn_hash}",
+                }
+    except Exception:
+        pass
+    return symbols
 
 
 def _compact_unified_diff(old_str: str, new_str: str) -> list:
@@ -778,16 +872,32 @@ def _analyze_single_file_diff(rel_path: str, old_bytes: bytes, new_bytes: bytes,
     if ext in binary_exts:
         old_kb = round(len(old_bytes) / 1024.0, 1)
         new_kb = round(len(new_bytes) / 1024.0, 1)
+        old_h = hashlib.sha1(old_bytes).hexdigest()[:7] if old_bytes else "none"
+        new_h = hashlib.sha1(new_bytes).hexdigest()[:7] if new_bytes else "none"
+        added_funcs, removed_funcs, modified_funcs = [], [], []
+        if ext == ".so":
+            old_syms = _extract_elf_so_symbols(old_bytes)
+            new_syms = _extract_elf_so_symbols(new_bytes)
+            for k, info in new_syms.items():
+                if k not in old_syms:
+                    added_funcs.append(info["sig"])
+                elif old_syms[k]["body"] != info["body"]:
+                    modified_funcs.append(info["sig"])
+            for k, info in old_syms.items():
+                if k not in new_syms:
+                    removed_funcs.append(info["sig"])
         return {
             "path": rel_path,
             "is_binary": True,
             "added_lines": 0,
             "removed_lines": 0,
-            "added_funcs": [],
-            "removed_funcs": [],
-            "modified_funcs": [],
+            "added_funcs": added_funcs,
+            "removed_funcs": removed_funcs,
+            "modified_funcs": modified_funcs,
             "func_diffs": {},
-            "raw_diff_preview": [f"Бинарный файл: было {old_kb} КБ ➔ стало {new_kb} КБ"],
+            "raw_diff_preview": [
+                f"Бинарный файл: было {old_kb} КБ ({len(old_bytes)} B, sha1:{old_h}) ➔ стало {new_kb} КБ ({len(new_bytes)} B, sha1:{new_h})"
+            ],
         }
 
     old_text = old_bytes.decode("utf-8", errors="replace") if old_bytes else ""
@@ -809,12 +919,18 @@ def _analyze_single_file_diff(rel_path: str, old_bytes: bytes, new_bytes: bytes,
         if ext == ".py":
             old_syms = _extract_python_symbols(old_text)
             new_syms = _extract_python_symbols(new_text)
-        elif ext in (".html", ".js"):
+        elif ext in (".html", ".js", ".ts", ".jsx", ".tsx"):
             old_syms = _extract_js_symbols(old_text)
             new_syms = _extract_js_symbols(new_text)
-        elif ext == ".java":
+        elif ext in (".java", ".kt", ".kts"):
             old_syms = _extract_java_symbols(old_text)
             new_syms = _extract_java_symbols(new_text)
+        elif ext == ".go":
+            old_syms = _extract_go_symbols(old_text)
+            new_syms = _extract_go_symbols(new_text)
+        elif ext in (".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".rs"):
+            old_syms = _extract_cpp_symbols(old_text)
+            new_syms = _extract_cpp_symbols(new_text)
 
     added_funcs = []
     removed_funcs = []
@@ -827,7 +943,6 @@ def _analyze_single_file_diff(rel_path: str, old_bytes: bytes, new_bytes: bytes,
                 added_funcs.append(info["sig"])
             elif old_syms[k]["body"] != info["body"]:
                 modified_funcs.append(info["sig"])
-                func_diffs[info["sig"]] = _compact_unified_diff(old_syms[k]["body"], info["body"])
         for k, info in old_syms.items():
             if k not in new_syms:
                 removed_funcs.append(info["sig"])
@@ -848,7 +963,6 @@ def _analyze_single_file_diff(rel_path: str, old_bytes: bytes, new_bytes: bytes,
         "func_diffs": func_diffs,
         "raw_diff_preview": raw_preview,
     }
-
 
 def _fetch_blob_bytes(blob_sha: str, token: str = "", repo: str = "") -> bytes:
     if not blob_sha:
@@ -1055,8 +1169,6 @@ def compare_any_two_sources(base_spec: str, target_spec: str, base_custom_lbl: s
                 report_lines.append(f"  🟡 Изменены внутри функции ({len(f_diff['modified_funcs'])}):")
                 for fn in f_diff["modified_funcs"]:
                     report_lines.append(f"    ~ {fn}")
-                    for sl in (f_diff["func_diffs"].get(fn) or []):
-                        report_lines.append(f"        {sl}")
 
             if f_diff["raw_diff_preview"]:
                 report_lines.append("  🔍 Полный построчный Git Diff по файлу:")
@@ -1571,6 +1683,45 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 hints = data.get("bridge_hints") or {}
                 inst = resolve_installed_apps_status(hints, _CACHED_RUNS_LIST)
                 return self._send_json({"status": "ok", "installed": inst})
+
+            if path == "/api/save_diff_txt":
+                cfg = load_config()
+                report_text = data.get("report_text") or ""
+                if not report_text.strip():
+                    return self._send_json({"status": "error", "error": "Текст отчёта пуст"})
+                save_dir = (data.get("save_dir") or cfg.get("save_dir") or DEFAULT_SAVE_DIR).strip()
+                os.makedirs(save_dir, exist_ok=True)
+                base_lbl = data.get("base_label") or ""
+                target_lbl = data.get("target_label") or ""
+
+                def _short_tag(lbl: str, fb: str) -> str:
+                    m_b = re.search(r"#(\d+)", lbl)
+                    if m_b:
+                        return f"b{m_b.group(1)}"
+                    if "Рабочая папка" in lbl or "LOCAL_FOLDER" in lbl:
+                        return "folder"
+                    if ".zip" in lbl.lower():
+                        return "zip"
+                    m_id = re.search(r"ID:\s*([0-9a-f]{5,10})", lbl, re.I)
+                    if m_id:
+                        return m_id.group(1)[:7]
+                    return fb
+
+                tag_a = _short_tag(base_lbl, "A")
+                tag_b = _short_tag(target_lbl, "B")
+                ts_str = datetime.datetime.now().strftime("%H%M%S")
+                fname = f"diff_{tag_a}_to_{tag_b}_{ts_str}.txt"
+                out_path = os.path.join(save_dir, fname)
+                raw_bytes = report_text.encode("utf-8")
+                with open(out_path, "wb") as f:
+                    f.write(raw_bytes)
+                sz_kb = round(len(raw_bytes) / 1024.0, 1)
+                return self._send_json({
+                    "status": "ok",
+                    "txt_path": out_path,
+                    "filename": fname,
+                    "size_kb": sz_kb,
+                })
 
             if path == "/api/compare":
                 base_spec = (data.get("base_spec") or "LOCAL_FOLDER").strip()

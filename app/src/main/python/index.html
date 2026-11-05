@@ -251,10 +251,13 @@
         <button class="btn btn-green" id="btnCopyDiffReport" onclick="copyDiffReport()">
           📋 Скопировать весь отчёт (для чата)
         </button>
-        <button class="btn btn-purple" onclick="applyShortDiffToCommitMsg()">
-          ✍️ Вставить сводку в «Описание сборки»
+        <button class="btn btn-blue" id="btnSaveDiffTxt" onclick="saveDiffReportTxt()">
+          💾 Сохранить отчёт в .txt
         </button>
       </div>
+      <button class="btn btn-purple" style="margin-top:6px;" onclick="applyShortDiffToCommitMsg()">
+        ✍️ Вставить сводку в «Описание сборки»
+      </button>
       <pre id="diffReportPre" class="diff-pre"></pre>
     </div>
   </div>
@@ -898,6 +901,47 @@ async function runSelectedComparison() {
   } catch (e) {
     stopProgressPolling();
     pre.textContent = '❌ Ошибка сети: ' + e;
+  }
+}
+
+async function saveDiffReportTxt() {
+  if (!checkAndroidStorageState()) {
+    requestAndroidStoragePerm();
+    return;
+  }
+  const txt = lastDiffReportText || document.getElementById('diffReportPre').textContent || '';
+  if (!txt || txt.indexOf('⏳') === 0) {
+    showStatus('⚠️ Сначала выполни сравнение (А ➔ Б)!', true);
+    return;
+  }
+  const sd = document.getElementById('saveDirInput').value.trim() || '/storage/emulated/0/Download';
+  const btn = document.getElementById('btnSaveDiffTxt');
+  if (btn) btn.textContent = '⏳ Сохраняю .txt...';
+  try {
+    const r = await fetch('/api/save_diff_txt', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        report_text: txt,
+        save_dir: sd,
+        base_label: compareBaseLabel || '',
+        target_label: compareTargetLabel || ''
+      })
+    });
+    const d = await r.json();
+    if (d.status === 'ok') {
+      if (btn) btn.textContent = '✅ СОХРАНЕНО: ' + d.filename;
+      showStatus('✅ Отчёт сравнения сохранён в файл:\n• ' + d.txt_path + ' (' + d.size_kb + ' КБ)', false);
+      setTimeout(() => {
+        if (btn) btn.textContent = '💾 Сохранить отчёт в .txt';
+      }, 3000);
+    } else {
+      if (btn) btn.textContent = '💾 Сохранить отчёт в .txt';
+      showStatus('❌ Ошибка сохранения .txt: ' + d.error, true);
+    }
+  } catch (e) {
+    if (btn) btn.textContent = '💾 Сохранить отчёт в .txt';
+    showStatus('❌ Ошибка сети: ' + e, true);
   }
 }
 
