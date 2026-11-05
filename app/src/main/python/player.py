@@ -2,12 +2,14 @@
 import os
 import re
 import io
+import ast
 import json
 import time
 import shutil
 import base64
 import hashlib
 import zipfile
+import difflib
 import traceback
 import http.client
 import urllib.request
@@ -140,7 +142,6 @@ def _discover_git_token(extra_dirs=None) -> str:
         except Exception:
             pass
 
-    # Также проверяем .zip архивы в Download, если внутри них есть .git/config
     try:
         if os.path.isdir(DEFAULT_SAVE_DIR):
             for entry in os.listdir(DEFAULT_SAVE_DIR):
@@ -222,6 +223,15 @@ def save_config(new_data: dict) -> dict:
     return dict(cfg)
 
 
+def _extract_version_tag(title: str) -> str:
+    if not title:
+        return ""
+    m = re.search(r"\b(v\d+(?:\.\d+)?)\b", title, re.IGNORECASE)
+    if m:
+        return m.group(1).lower()
+    return ""
+
+
 def gh_api(endpoint: str, method: str = "GET", payload: dict = None, token: str = "", repo: str = ""):
     cfg = load_config()
     tok = (token or cfg.get("token") or "").strip()
@@ -229,7 +239,7 @@ def gh_api(endpoint: str, method: str = "GET", payload: dict = None, token: str 
     url = endpoint if endpoint.startswith("http") else f"https://api.github.com/repos/{rep}/{endpoint.lstrip('/')}"
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "JennyBuilder-Android/1.2",
+        "User-Agent": "JennyBuilder-Android/1.4",
     }
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
@@ -265,7 +275,7 @@ def gh_download_bytes(endpoint: str, token: str = "", repo: str = "") -> bytes:
     url = endpoint if endpoint.startswith("http") else f"https://api.github.com/repos/{rep}/{endpoint.lstrip('/')}"
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "JennyBuilder-Android/1.2",
+        "User-Agent": "JennyBuilder-Android/1.4",
     }
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
@@ -288,9 +298,423 @@ def gh_download_bytes(endpoint: str, token: str = "", repo: str = "") -> bytes:
     raise RuntimeError(f"Не удалось скачать поток после 4 попыток: {last_err}")
 
 
+def _describe_run_or_commit(sha: str = "", run_obj: dict = None) -> dict:
+    if run_obj:
+        bnum = run_obj.get("run_number") or ""
+        title = (run_obj.get("display_title") or run_obj.get("name") or "").strip()
+        vtag = _extract_version_tag(title)
+        human = f"Сборка #{bnum}" if bnum else "Сборка"
+        if vtag:
+            human += f" ({vtag})"
+        if title:
+            human += f" — «{title}»"
+        return {
+            "build_number": bnum,
+            "version_tag": vtag,
+            "title": title,
+            "human_label": human,
+            "sha": (run_obj.get("head_sha") or sha or "")[:7],
+        }
+
+    try:
+        runs_data = gh_api("actions/runs?per_page=10", "GET")
+        for r in runs_data.get("workflow_runs", []):
+            r_sha = r.get("head_sha") or ""
+            if sha and (r_sha.startswith(sha) or sha.startswith(r_sha)):
+                return _describe_run_or_commit(sha, r)
+        if not sha and runs_data.get("workflow_runs"):
+            return _describe_run_or_commit("", runs_data["workflow_runs"][0])
+    except Exception:
+        pass
+
+    title = ""
+    if sha:
+        try:
+            c_info = gh_api(f"commits/{sha}", "GET")
+            msg = ((c_info.get("commit") or {}).get("message") or "").splitlines()
+            if msg:
+                title = msg[0].strip()
+        except Exception:
+            pass
+    vtag = _extract_version_tag(title)
+    human = f"Версия {vtag}" if vtag else "Последняя версия"
+    if title:
+        human += f" — «{title}»"
+    return {
+        "build_number": "",
+        "version_tag": vtag,
+        "title": title,
+        "human_label": human,
+        "sha": (sha or "")[:7],
+    }
+
+
 def _git_blob_sha1(data: bytes) -> str:
     hdr = f"blob {len(data)}\0".encode("utf-8")
     return hashlib.sha1(hdr + data).hexdigest()
+
+
+# ==============================================================================
+# АНАЛИЗАТОР ИЗМЕНЕНИЙ В ФУНКЦИЯХ, КЛАССАХ И СТРОКАХ (ДЛЯ PY, HTML/JS, JAVA, XML)
+# ==============================================================================
+
+def _extract_python_symbols(text: str) -> dict:
+    """Возвращает {symbol_name: {'sig': str, 'body': str}} для всех def и class в Python-файле."""
+    lines = text.splitlines()
+    symbols = {}
+    try:
+        tree = ast.parse(text)
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                args = [a.arg for a in node.args.args]
+                prefix = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
+                sig = f"{prefix} {node.name}({', '.join(args)})"
+                start = max(0, getattr(node, "lineno", 1) - 1)
+                end = getattr(node, "end_lineno", start + 1)
+                body = "\n".join(lines[start:end]).strip()
+                symbols[node.name] = {"sig": sig, "body": body}
+            elif isinstance(node, ast.ClassDef):
+                c_start = max(0, getattr(node, "lineno", 1) - 1)
+                c_end = getattr(node, "end_lineno", c_start + 1)
+                # Для самого класса сохраняем его методы отдельно как ClassName.method_name
+                has_methods = False
+                for sub in node.body:
+                    if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        has_methods = True
+                        args = [a.arg for a in sub.args.args]
+                        m_name = f"{node.name}.{sub.name}"
+                        sig = f"def {m_name}({', '.join(args)})"
+                        s_start = max(0, getattr(sub, "lineno", 1) - 1)
+                        s_end = getattr(sub, "end_lineno", s_start + 1)
+                        body = "\n".join(lines[s_start:s_end]).strip()
+                        symbols[m_name] = {"sig": sig, "body": body}
+                if not has_methods:
+                    symbols[f"class {node.name}"] = {
+                        "sig": f"class {node.name}",
+                        "body": "\n".join(lines[c_start:c_end]).strip(),
+                    }
+        return symbols
+    except Exception:
+        # Фолбэк на регулярки, если файл содержит синтаксическую ошибку
+        cur_name = None
+        cur_sig = None
+        cur_lines = []
+        for ln in lines:
+            m = re.match(r"^\s*(?:async\s+def|def|class)\s+([A-Za-z0-9_]+)\s*(\(.*?\))?\s*:", ln)
+            if m and not ln.startswith("        "):
+                if cur_name:
+                    symbols[cur_name] = {"sig": cur_sig, "body": "\n".join(cur_lines).strip()}
+                cur_name = m.group(1)
+                cur_sig = ln.strip().rstrip(":")
+                cur_lines = [ln]
+            elif cur_name:
+                cur_lines.append(ln)
+        if cur_name:
+            symbols[cur_name] = {"sig": cur_sig, "body": "\n".join(cur_lines).strip()}
+        return symbols
+
+
+def _extract_brace_blocks(text: str, pattern: re.Pattern, kind_Formatter) -> dict:
+    """Универсальный парсер функций с фигурными скобками { ... } для JS/HTML и Java."""
+    symbols = {}
+    for m in pattern.finditer(text):
+        name, sig = kind_Formatter(m)
+        if not name or name in ("if", "for", "while", "switch", "catch", "synchronized", "function"):
+            continue
+        brace_open = text.find("{", m.end() - 1)
+        if brace_open == -1:
+            continue
+        depth = 0
+        end_idx = brace_open
+        n_len = len(text)
+        i = brace_open
+        while i < n_len:
+            ch = text[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end_idx = i + 1
+                    break
+            i += 1
+        body = text[m.start():end_idx].strip()
+        symbols[name] = {"sig": sig, "body": body}
+    return symbols
+
+
+def _extract_js_symbols(text: str) -> dict:
+    pat = re.compile(
+        r"(?:(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*\(([^)]*)\)"
+        r"|(?:window\.|const\s+|let\s+|var\s+)([A-Za-z0-9_$]+)\s*=\s*(?:async\s+)?(?:function\s*\(([^)]*)\)|\(([^)]*)\)\s*=>))"
+        r"\s*\{"
+    )
+    def fmt(m):
+        if m.group(1):
+            name = m.group(1)
+            args = m.group(2).strip()
+            return name, f"function {name}({args})"
+        name = m.group(3)
+        args = (m.group(4) or m.group(5) or "").strip()
+        return name, f"function {name}({args})"
+    return _extract_brace_blocks(text, pat, fmt)
+
+
+def _extract_java_symbols(text: str) -> dict:
+    pat = re.compile(
+        r"(?:public|private|protected)\s+(?:static\s+)?(?:final\s+)?(?:synchronized\s+)?"
+        r"[A-Za-z0-9_<>\[\].,\s]+?\s+([A-Za-z0-9_]+)\s*\(([^)]*)\)\s*(?:throws\s+[A-Za-z0-9_,\s]+)?\{"
+    )
+    def fmt(m):
+        name = m.group(1).strip()
+        args = " ".join(m.group(2).split())
+        return name, f"{name}({args})"
+    return _extract_brace_blocks(text, pat, fmt)
+
+
+def _compact_unified_diff(old_str: str, new_str: str, max_lines: int = 18) -> list:
+    old_lines = old_str.splitlines()
+    new_lines = new_str.splitlines()
+    diff = list(difflib.unified_diff(old_lines, new_lines, n=1, lineterm=""))
+    out = []
+    for ln in diff:
+        if ln.startswith(("---", "+++", "@@")):
+            continue
+        if ln.startswith(("+", "-")):
+            clean = ln[0] + " " + ln[1:].strip()
+            if len(clean) > 110:
+                clean = clean[:107] + "..."
+            out.append(clean)
+            if len(out) >= max_lines:
+                out.append("  ... (остальные строки опущены)")
+                break
+    return out
+
+
+def _analyze_single_file_diff(rel_path: str, old_bytes: bytes, new_bytes: bytes) -> dict:
+    ext = os.path.splitext(rel_path)[1].lower()
+    binary_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".so", ".jar", ".apk", ".zip", ".keystore", ".jks"}
+    if ext in binary_exts:
+        old_kb = round(len(old_bytes) / 1024.0, 1)
+        new_kb = round(len(new_bytes) / 1024.0, 1)
+        return {
+            "path": rel_path,
+            "is_binary": True,
+            "added_lines": 0,
+            "removed_lines": 0,
+            "added_funcs": [],
+            "removed_funcs": [],
+            "modified_funcs": [],
+            "func_diffs": {},
+            "raw_diff_preview": [f"Бинарный файл: было {old_kb} КБ ➔ стало {new_kb} КБ"],
+        }
+
+    old_text = old_bytes.decode("utf-8", errors="replace")
+    new_text = new_bytes.decode("utf-8", errors="replace")
+
+    old_lines = old_text.splitlines()
+    new_lines = new_text.splitlines()
+    u_diff = list(difflib.unified_diff(old_lines, new_lines, n=0, lineterm=""))
+    plus_cnt = sum(1 for l in u_diff if l.startswith("+") and not l.startswith("+++"))
+    minus_cnt = sum(1 for l in u_diff if l.startswith("-") and not l.startswith("---"))
+
+    old_syms = {}
+    new_syms = {}
+    if ext == ".py":
+        old_syms = _extract_python_symbols(old_text)
+        new_syms = _extract_python_symbols(new_text)
+    elif ext in (".html", ".js"):
+        old_syms = _extract_js_symbols(old_text)
+        new_syms = _extract_js_symbols(new_text)
+    elif ext == ".java":
+        old_syms = _extract_java_symbols(old_text)
+        new_syms = _extract_java_symbols(new_text)
+
+    added_funcs = []
+    removed_funcs = []
+    modified_funcs = []
+    func_diffs = {}
+
+    if old_syms or new_syms:
+        for k, info in new_syms.items():
+            if k not in old_syms:
+                added_funcs.append(info["sig"])
+            elif old_syms[k]["body"] != info["body"]:
+                modified_funcs.append(info["sig"])
+                func_diffs[info["sig"]] = _compact_unified_diff(old_syms[k]["body"], info["body"], max_lines=10)
+        for k, info in old_syms.items():
+            if k not in new_syms:
+                removed_funcs.append(info["sig"])
+
+    raw_preview = _compact_unified_diff(old_text, new_text, max_lines=16)
+
+    return {
+        "path": rel_path,
+        "is_binary": False,
+        "added_lines": plus_cnt,
+        "removed_lines": minus_cnt,
+        "added_funcs": added_funcs,
+        "removed_funcs": removed_funcs,
+        "modified_funcs": modified_funcs,
+        "func_diffs": func_diffs,
+        "raw_diff_preview": raw_preview,
+    }
+
+
+def compare_local_map_with_github(local_map: dict, source_label: str, token: str = "", repo: str = "") -> dict:
+    if not local_map:
+        raise ValueError("Нет доступных файлов для сравнения (0 файлов). Проверь «Доступ ко всем файлам»!")
+
+    cfg = load_config()
+    rep = (repo or cfg.get("repo") or DEFAULT_REPO).strip()
+    branch_name, head_sha = _resolve_target_branch(token=token, repo=rep)
+    meta = _describe_run_or_commit(head_sha, None)
+
+    commit_info = gh_api(f"git/commits/{head_sha}", "GET", token=token, repo=rep)
+    base_tree_sha = commit_info["tree"]["sha"]
+    tree_info = gh_api(f"git/trees/{base_tree_sha}?recursive=1", "GET", token=token, repo=rep)
+    remote_blobs = {
+        item["path"]: item["sha"]
+        for item in tree_info.get("tree", [])
+        if item.get("type") == "blob"
+    }
+
+    added_files = []
+    removed_files = []
+    modified_paths = []
+    unchanged_count = 0
+
+    for rel_p, loc_bytes in sorted(local_map.items()):
+        loc_sha = _git_blob_sha1(loc_bytes)
+        rem_sha = remote_blobs.get(rel_p)
+        if rem_sha is None:
+            added_files.append(rel_p)
+        elif rem_sha != loc_sha:
+            modified_paths.append(rel_p)
+        else:
+            unchanged_count += 1
+
+    for rem_p in sorted(remote_blobs.keys()):
+        if rem_p not in local_map:
+            removed_files.append(rem_p)
+
+    report_lines = []
+    report_lines.append("==========================================================")
+    report_lines.append("📊 ОТЧЁТ ОБ ИЗМЕНЕНИЯХ (ЛОКАЛЬНО vs GITHUB)")
+    report_lines.append("==========================================================")
+    report_lines.append(f"• Локальный источник: {source_label}")
+    report_lines.append(f"• На GitHub сейчас: {rep} | {meta.get('human_label')}")
+    report_lines.append(
+        f"• Итог по файлам: изменено: {len(modified_paths)} | добавлено: {len(added_files)} | "
+        f"удалено: {len(removed_files)} | без изменений: {unchanged_count}"
+    )
+    report_lines.append("----------------------------------------------------------")
+
+    if not modified_paths and not added_files and not removed_files:
+        report_lines.append("✅ Полное совпадение! Локальные файлы 1-в-1 совпадают с GitHub (0 изменений).")
+        return {
+            "has_changes": False,
+            "short_commit_msg": "chore: rebuild without code changes",
+            "report_text": "\n".join(report_lines),
+            "modified_count": 0,
+            "added_count": 0,
+            "removed_count": 0,
+        }
+
+    commit_summary_parts = []
+
+    # 1. Новые файлы
+    if added_files:
+        report_lines.append(f"\n🟢 НОВЫЕ ФАЙЛЫ ({len(added_files)}):")
+        for af in added_files:
+            info = _analyze_single_file_diff(af, b"", local_map[af])
+            report_lines.append(f"  + {af} (+{info['added_lines']} строк)")
+            for fn in info["added_funcs"]:
+                report_lines.append(f"      🟢 Новая функция: {fn}")
+            commit_summary_parts.append(f"+{os.path.basename(af)}")
+
+    # 2. Удалённые файлы
+    if removed_files:
+        report_lines.append(f"\n🔴 УДАЛЁННЫЕ ФАЙЛЫ ({len(removed_files)}):")
+        for rf in removed_files:
+            report_lines.append(f"  - {rf}")
+            commit_summary_parts.append(f"-{os.path.basename(rf)}")
+
+    # 3. Детальный разбор изменённых файлов и их функций
+    if modified_paths:
+        report_lines.append(f"\n🟡 ИЗМЕНЁННЫЕ ФАЙЛЫ И ФУНКЦИИ ({len(modified_paths)}):")
+        for mp in modified_paths:
+            rem_sha = remote_blobs[mp]
+            try:
+                blob_obj = gh_api(f"git/blobs/{rem_sha}", "GET", token=token, repo=rep)
+                b64_content = (blob_obj.get("content") or "").replace("\n", "").replace("\r", "")
+                old_bytes = base64.b64decode(b64_content) if b64_content else b""
+            except Exception:
+                old_bytes = b""
+
+            f_diff = _analyze_single_file_diff(mp, old_bytes, local_map[mp])
+            report_lines.append(
+                f"\n📄 Файл: {mp} (+{f_diff['added_lines']} / -{f_diff['removed_lines']} строк)"
+            )
+
+            if f_diff["added_funcs"]:
+                report_lines.append(f"  🟢 Добавлены функции ({len(f_diff['added_funcs'])}):")
+                for fn in f_diff["added_funcs"]:
+                    report_lines.append(f"    + {fn}")
+
+            if f_diff["removed_funcs"]:
+                report_lines.append(f"  🔴 Удалены функции ({len(f_diff['removed_funcs'])}):")
+                for fn in f_diff["removed_funcs"]:
+                    report_lines.append(f"    - {fn}")
+
+            if f_diff["modified_funcs"]:
+                report_lines.append(f"  🟡 Изменены внутри функции ({len(f_diff['modified_funcs'])}):")
+                for fn in f_diff["modified_funcs"]:
+                    report_lines.append(f"    ~ {fn}")
+                    sub_lines = f_diff["func_diffs"].get(fn) or []
+                    for sl in sub_lines:
+                        report_lines.append(f"        {sl}")
+
+            if not f_diff["added_funcs"] and not f_diff["removed_funcs"] and not f_diff["modified_funcs"]:
+                if f_diff["raw_diff_preview"]:
+                    report_lines.append("  🔍 Изменённые строки:")
+                    for rl in f_diff["raw_diff_preview"]:
+                        report_lines.append(f"    {rl}")
+
+            # Формируем краткую выжимку для поля описания коммита
+            short_fn_notes = []
+            for fn in f_diff["added_funcs"][:2]:
+                short_name = fn.split("(")[0].replace("async def ", "").replace("def ", "").replace("function ", "").strip()
+                short_fn_notes.append(f"+{short_name}")
+            for fn in f_diff["modified_funcs"][:2]:
+                short_name = fn.split("(")[0].replace("async def ", "").replace("def ", "").replace("function ", "").strip()
+                short_fn_notes.append(f"~{short_name}")
+            for fn in f_diff["removed_funcs"][:2]:
+                short_name = fn.split("(")[0].replace("async def ", "").replace("def ", "").replace("function ", "").strip()
+                short_fn_notes.append(f"-{short_name}")
+
+            bname = os.path.basename(mp)
+            if short_fn_notes:
+                commit_summary_parts.append(f"{bname}({', '.join(short_fn_notes)})")
+            else:
+                commit_summary_parts.append(f"{bname}(+{f_diff['added_lines']}/-{f_diff['removed_lines']})")
+
+    short_commit = "upd: " + "; ".join(commit_summary_parts[:4])
+    if len(short_commit) > 100:
+        short_commit = short_commit[:97] + "..."
+
+    report_lines.append("\n==========================================================")
+    report_lines.append(f"💡 Готовое краткое описание для сборки: {short_commit}")
+    report_lines.append("==========================================================")
+
+    return {
+        "has_changes": True,
+        "short_commit_msg": short_commit,
+        "report_text": "\n".join(report_lines),
+        "modified_count": len(modified_paths),
+        "added_count": len(added_files),
+        "removed_count": len(removed_files),
+    }
 
 
 def _collect_files_from_zip_bytes(zip_bytes: bytes) -> dict:
@@ -436,7 +860,8 @@ def push_file_map_to_github(file_map: dict, commit_msg: str, token: str = "", re
         repo=repo,
     )
     return {
-        "commit_sha": new_commit_sha[:8],
+        "commit_sha": new_commit_sha[:7],
+        "commit_msg": commit_msg,
         "changed_files": changed_count,
         "total_files": len(file_map),
         "branch": branch_name,
@@ -583,21 +1008,34 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 cfg = load_config()
                 runs_data = gh_api("actions/runs?per_page=8", "GET", token=cfg["token"], repo=cfg["repo"])
                 runs_list = []
+                latest_good_summary = None
                 for r in runs_data.get("workflow_runs", []):
-                    runs_list.append({
+                    title = r.get("display_title") or r.get("name") or "Build"
+                    vtag = _extract_version_tag(title)
+                    item_dict = {
                         "id": r["id"],
                         "run_number": r.get("run_number"),
+                        "version_tag": vtag,
                         "status": r.get("status"),
                         "conclusion": r.get("conclusion"),
-                        "head_sha": (r.get("head_sha") or "")[:8],
+                        "head_sha": (r.get("head_sha") or "")[:7],
                         "full_sha": r.get("head_sha") or "",
-                        "title": r.get("display_title") or r.get("name") or "Build",
+                        "title": title,
                         "created_at": (r.get("created_at") or "").replace("T", " ")[:19],
-                    })
+                    }
+                    runs_list.append(item_dict)
+                    if r.get("conclusion") == "success" and latest_good_summary is None:
+                        latest_good_summary = item_dict
 
                 target_run_id = qs.get("run_id", [""])[0]
                 if not target_run_id and runs_list:
                     target_run_id = str(runs_list[0]["id"])
+
+                selected_run_meta = None
+                for item in runs_list:
+                    if str(item["id"]) == str(target_run_id):
+                        selected_run_meta = item
+                        break
 
                 active_details = None
                 if target_run_id:
@@ -621,6 +1059,9 @@ class BuilderHandler(BaseHTTPRequestHandler):
 
                     active_details = {
                         "run_id": int(target_run_id),
+                        "run_number": selected_run_meta.get("run_number") if selected_run_meta else None,
+                        "version_tag": selected_run_meta.get("version_tag") if selected_run_meta else "",
+                        "title": selected_run_meta.get("title") if selected_run_meta else "",
                         "steps": steps_out,
                         "failed_job_id": failed_job_id,
                         "failed_step_name": failed_step_info.get("name") if failed_step_info else "",
@@ -632,6 +1073,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "repo": cfg["repo"],
                     "runs": runs_list,
+                    "latest_good": latest_good_summary,
                     "active": active_details,
                 })
             except Exception as e:
@@ -685,6 +1127,30 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 save_config({"save_dir": full_new, "browse_dir": full_new})
                 return self._send_json({"status": "ok", "created": full_new})
 
+            if path == "/api/diff_folder":
+                cfg = load_config()
+                folder_p = (data.get("folder_path") or cfg.get("source_dir") or DEFAULT_PROJECT_DIR).strip()
+                if not os.path.isdir(folder_p):
+                    return self._send_json({
+                        "status": "error",
+                        "error": f"Папка не найдена или нет доступа: {folder_p}"
+                    })
+                save_config({"source_dir": folder_p})
+                fmap = _collect_files_from_folder(folder_p)
+                res = compare_local_map_with_github(fmap, f"Рабочая папка {folder_p}")
+                return self._send_json({"status": "ok", **res})
+
+            if path == "/api/diff_zip":
+                zip_path = (data.get("zip_path") or "").strip()
+                if not zip_path or not os.path.isfile(zip_path):
+                    return self._send_json({
+                        "status": "error",
+                        "error": f"Файл архива не найден: {zip_path}"
+                    })
+                fmap = _collect_files_from_zip_bytes(open(zip_path, "rb").read())
+                res = compare_local_map_with_github(fmap, f"Архив {zip_path}")
+                return self._send_json({"status": "ok", **res})
+
             if path == "/api/push_local_zip":
                 zip_path = (data.get("zip_path") or "").strip()
                 commit_msg = (data.get("message") or "").strip() or f"build(zip): push {os.path.basename(zip_path)} via JennyBuilder"
@@ -726,6 +1192,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 cfg = load_config()
                 run_id = data.get("run_id")
                 run_number = data.get("run_number") or run_id
+                version_tag = (data.get("version_tag") or "").strip()
                 save_dir = (data.get("save_dir") or cfg.get("save_dir") or DEFAULT_SAVE_DIR).strip()
                 os.makedirs(save_dir, exist_ok=True)
                 save_config({"save_dir": save_dir})
@@ -738,7 +1205,8 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 zip_bytes = gh_download_bytes(f"actions/artifacts/{art_id}/zip")
 
                 repo_short = cfg["repo"].split("/")[-1]
-                out_apk_name = f"{repo_short}_b{run_number}.apk"
+                ver_suffix = f"_{version_tag}" if version_tag else ""
+                out_apk_name = f"{repo_short}_#{run_number}{ver_suffix}.apk"
                 out_apk_path = os.path.join(save_dir, out_apk_name)
 
                 with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
@@ -753,6 +1221,8 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "apk_path": out_apk_path,
                     "size_mb": sz_mb,
+                    "run_number": run_number,
+                    "version_tag": version_tag,
                 })
 
             if path == "/api/download_last_good_zip":
@@ -770,15 +1240,18 @@ class BuilderHandler(BaseHTTPRequestHandler):
 
                 if good_run:
                     sha = good_run["head_sha"]
-                    bnum = good_run.get("run_number") or sha[:7]
+                    meta = _describe_run_or_commit(sha, good_run)
                 else:
                     br, sha = _resolve_target_branch()
-                    bnum = br
+                    meta = _describe_run_or_commit(sha, None)
 
                 raw_zip_bytes = gh_download_bytes(f"zipball/{sha}")
 
                 repo_short = cfg["repo"].split("/")[-1]
-                out_zip_name = f"{repo_short}_clean_b{bnum}_{sha[:7]}.zip"
+                bnum = meta.get("build_number") or "latest"
+                vtag = meta.get("version_tag")
+                ver_part = f"_{vtag}" if vtag else ""
+                out_zip_name = f"{repo_short}_#{bnum}{ver_part}_clean.zip"
                 out_zip_path = os.path.join(save_dir, out_zip_name)
 
                 with zipfile.ZipFile(io.BytesIO(raw_zip_bytes), "r") as zin, zipfile.ZipFile(out_zip_path, "w", zipfile.ZIP_DEFLATED) as zout:
@@ -795,24 +1268,24 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     "zip_path": out_zip_path,
                     "size_mb": sz_mb,
                     "build_number": bnum,
-                    "sha": sha[:7],
+                    "version_tag": vtag,
+                    "title": meta.get("title"),
+                    "human_label": meta.get("human_label"),
                 })
 
             if path == "/api/pull_to_folder":
                 cfg = load_config()
                 folder_p = (data.get("folder_path") or cfg.get("source_dir") or DEFAULT_PROJECT_DIR).strip()
-                mode = (data.get("mode") or "latest").strip()
                 save_config({"source_dir": folder_p})
 
-                if mode == "last_good":
-                    runs_data = gh_api("actions/runs?conclusion=success&per_page=5", "GET")
-                    good_runs = [r for r in runs_data.get("workflow_runs", []) if r.get("conclusion") == "success"]
-                    if good_runs:
-                        sha = good_runs[0]["head_sha"]
-                    else:
-                        _, sha = _resolve_target_branch()
+                runs_data = gh_api("actions/runs?conclusion=success&per_page=5", "GET")
+                good_runs = [r for r in runs_data.get("workflow_runs", []) if r.get("conclusion") == "success"]
+                if good_runs:
+                    sha = good_runs[0]["head_sha"]
+                    meta = _describe_run_or_commit(sha, good_runs[0])
                 else:
                     _, sha = _resolve_target_branch()
+                    meta = _describe_run_or_commit(sha, None)
 
                 raw_zip_bytes = gh_download_bytes(f"zipball/{sha}")
                 written = _unpack_zip_bytes_to_folder(raw_zip_bytes, folder_p)
@@ -820,7 +1293,10 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "folder_path": folder_p,
                     "written_files": written,
-                    "sha": sha[:7],
+                    "build_number": meta.get("build_number"),
+                    "version_tag": meta.get("version_tag"),
+                    "title": meta.get("title"),
+                    "human_label": meta.get("human_label"),
                 })
 
             if path == "/api/unpack_zip_to_folder":
@@ -833,6 +1309,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 written = _unpack_zip_bytes_to_folder(open(zip_path, "rb").read(), folder_p)
                 return self._send_json({
                     "status": "ok",
+                    "zip_path": zip_path,
                     "folder_path": folder_p,
                     "written_files": written,
                 })
@@ -861,7 +1338,9 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 sz_mb = round(os.path.getsize(out_zip_path) / (1024.0 * 1024.0), 2)
                 return self._send_json({
                     "status": "ok",
+                    "folder_path": folder_p,
                     "zip_path": out_zip_path,
+                    "files_count": len(fmap),
                     "size_mb": sz_mb,
                 })
 

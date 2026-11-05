@@ -11,8 +11,8 @@ android {
         applicationId "com.jenny.builder"
         minSdk 24
         targetSdk 33
-        versionCode 2
-        versionName "1.2"
+        versionCode 4
+        versionName "1.4"
         
         ndk {
             abiFilters "arm64-v8a"
