@@ -866,6 +866,29 @@ def _compact_unified_diff(old_str: str, new_str: str) -> list:
     return out
 
 
+def _download_zipball_safe_bytes(sha: str, token: str, repo: str, task_title: str) -> bytes:
+    """Надёжное скачивание zipball/{sha} с проверкой сигнатуры ZIP и авто-повтором."""
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            # Для zipball используем 1 поток при первой генерации на codeload.github.com, чтобы CDN не рвал архив
+            threads_cnt = 1 if attempt >= 1 else 8
+            raw = gh_download_bytes(
+                f"zipball/{sha}",
+                token=token,
+                repo=repo,
+                task_title=f"{task_title}" + (f" (попытка {attempt})" if attempt > 1 else ""),
+                threads=threads_cnt,
+            )
+            if raw and len(raw) > 22 and raw[:4] == b"PK\x03\x04" and zipfile.is_zipfile(io.BytesIO(raw)):
+                return raw
+            last_err = f"Сервер вернул неполный буфер ({len(raw) if raw else 0} байт)"
+        except Exception as e:
+            last_err = str(e)
+        time.sleep(0.8 * attempt)
+    raise RuntimeError(f"Не удалось скачать корректный .zip с GitHub после 3 попыток: {last_err}")
+
+
 def download_build_source_zip_custom(
     target_id: str = "",
     skip_so: bool = False,
@@ -912,12 +935,11 @@ def download_build_source_zip_custom(
     bnum = run_obj.get("run_number") or sha[:7]
     title = run_obj.get("display_title") or ""
 
-    raw_zip = gh_download_bytes(
-        f"zipball/{sha}",
+    raw_zip = _download_zipball_safe_bytes(
+        sha=sha,
         token=tok,
         repo=rep,
         task_title=f"Скачивание исходников #{bnum}" + (" (без .so)" if skip_so else " (полный)"),
-        threads=32,
     )
 
     repo_short = rep.split("/")[-1] if "/" in rep else rep
@@ -2069,10 +2091,9 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     meta = _describe_run_or_commit(sha, None)
 
                 bnum = meta.get("build_number") or "latest"
-                raw_zip_bytes = gh_download_bytes(
-                    f"zipball/{sha}",
+                raw_zip_bytes = gh_download_bytes(f"zipball/{sha}",
                     task_title=f"📦 Скачивание исходников Сборки #{bnum}",
-                    threads=32,
+                    threads=1,
                 )
 
                 repo_short = cfg["repo"].split("/")[-1]
@@ -2115,10 +2136,9 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     meta = _describe_run_or_commit(sha, None)
 
                 bnum = meta.get("build_number") or "latest"
-                raw_zip_bytes = gh_download_bytes(
-                    f"zipball/{sha}",
+                raw_zip_bytes = gh_download_bytes(f"zipball/{sha}",
                     task_title=f"⬇️ Скачивание Сборки #{bnum} с GitHub",
-                    threads=32,
+                    threads=1,
                 )
                 written = _unpack_zip_bytes_to_folder(raw_zip_bytes, folder_p)
                 set_progress(False, 100, "Готово", f"Записано {written} файлов")
