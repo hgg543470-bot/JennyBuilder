@@ -924,6 +924,37 @@ public class MainActivity extends AppCompatActivity {
             applyVideoSystemUiLockV132();
         }
 
+                @JavascriptInterface
+        public String getInstalledAppInfoJson(String pkgName) {
+            try {
+                android.content.pm.PackageManager pm = getPackageManager();
+                android.content.pm.PackageInfo pi = pm.getPackageInfo(pkgName, 0);
+                JSONObject obj = new JSONObject();
+                obj.put("installed", true);
+                obj.put("package", pkgName);
+                obj.put("versionName", pi.versionName != null ? pi.versionName : "");
+                long vCode = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) ? pi.getLongVersionCode() : pi.versionCode;
+                obj.put("versionCode", vCode);
+                obj.put("firstInstallTime", pi.firstInstallTime);
+                obj.put("lastUpdateTime", pi.lastUpdateTime);
+                if (pi.applicationInfo != null) {
+                    obj.put("apkPath", pi.applicationInfo.publicSourceDir != null ? pi.applicationInfo.publicSourceDir : pi.applicationInfo.sourceDir);
+                    CharSequence lbl = pm.getApplicationLabel(pi.applicationInfo);
+                    obj.put("appName", lbl != null ? lbl.toString() : pkgName);
+                }
+                return obj.toString();
+            } catch (Exception e) {
+                try {
+                    JSONObject obj = new JSONObject();
+                    obj.put("installed", false);
+                    obj.put("package", pkgName);
+                    return obj.toString();
+                } catch (Exception e2) {
+                    return "{\"installed\":false}";
+                }
+            }
+        }
+
         @JavascriptInterface
         public boolean hasStoragePermission() {
             return hasStoragePermissionInternalV165();

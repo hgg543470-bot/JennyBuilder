@@ -10,6 +10,7 @@ import base64
 import hashlib
 import zipfile
 import difflib
+import datetime
 import traceback
 import http.client
 import urllib.request
@@ -29,6 +30,7 @@ EXCLUDE_EXTS = {".pyc", ".pyo", ".log"}
 EXCLUDE_FILES = {"omni_full_trace.log", "omni_simple.log", "shizuku_window_dump.txt"}
 
 _MEM_CFG = {}
+_CACHED_RUNS_LIST = []
 
 
 def _get_config_paths():
@@ -177,6 +179,7 @@ def load_config() -> dict:
         "save_dir": DEFAULT_SAVE_DIR,
         "source_dir": DEFAULT_PROJECT_DIR,
         "browse_dir": DEFAULT_SAVE_DIR,
+        "last_downloaded_map": {},
     }
     if _MEM_CFG:
         cfg.update(_MEM_CFG)
@@ -232,6 +235,233 @@ def _extract_version_tag(title: str) -> str:
     return ""
 
 
+# ==============================================================================
+# LUCKY-PATCHER ДЕТЕКТОР УСТАНОВЛЕННОЙ СЕЙЧАС СБОРКИ И ВЕРСИИ НА ТЕЛЕФОНЕ
+# ==============================================================================
+
+def _query_android_package_native(pkg_name: str) -> dict:
+    """Читает PackageInfo напрямую через Chaquopy PackageManager (если доступно)."""
+    try:
+        from com.chaquo.python import Python
+        ctx = Python.getPlatform().getApplication()
+        pm = ctx.getPackageManager()
+        pi = pm.getPackageInfo(pkg_name, 0)
+        app_info = pi.applicationInfo
+        apk_path = ""
+        app_name = pkg_name
+        if app_info is not None:
+            apk_path = str(app_info.publicSourceDir or app_info.sourceDir or "")
+            lbl = pm.getApplicationLabel(app_info)
+            if lbl is not None:
+                app_name = str(lbl)
+        try:
+            v_code = int(pi.getLongVersionCode())
+        except Exception:
+            v_code = int(pi.versionCode)
+        return {
+            "installed": True,
+            "package": pkg_name,
+            "appName": app_name,
+            "versionName": str(pi.versionName or ""),
+            "versionCode": v_code,
+            "firstInstallTime": int(pi.firstInstallTime),
+            "lastUpdateTime": int(pi.lastUpdateTime),
+            "apkPath": apk_path,
+        }
+    except Exception:
+        return {"installed": False, "package": pkg_name}
+
+
+def _scan_apk_binary_for_version_and_crc(apk_path: str) -> dict:
+    """
+    Сканирует установленный на телефоне /data/app/.../base.apk:
+    1. Считает размер файла и CRC32 classes.dex (для 100% сверки со скачанными .apk в Download).
+    2. Ищет внутри classes.dex и assets/chaquopy/app.imy максимальный тег версии (например V165 -> v165).
+    """
+    res = {
+        "apk_size": 0,
+        "dex_crc": 0,
+        "detected_vtag": "",
+        "stamp_build_num": None,
+        "stamp_title": "",
+    }
+    if not apk_path or not os.path.isfile(apk_path):
+        return res
+    try:
+        res["apk_size"] = os.path.getsize(apk_path)
+        max_v_num = 0
+        with zipfile.ZipFile(apk_path, "r") as zf:
+            names = zf.namelist()
+            if "classes.dex" in names:
+                info = zf.getinfo("classes.dex")
+                res["dex_crc"] = info.CRC
+                raw_dex = zf.read("classes.dex")
+                # Ищем маркеры вида V165, V164, v165: и т.д.
+                for m in re.finditer(rb"(?:V|v)(1[1-9]\d|[2-9]\d\d)\b", raw_dex):
+                    v_int = int(m.group(1))
+                    if 110 <= v_int <= 999 and v_int > max_v_num:
+                        max_v_num = v_int
+
+            # Также проверяем вложенный архив Chaquopy (assets/chaquopy/app.imy), где лежит index.html
+            for nm in names:
+                if nm.endswith(".imy") and "app" in nm:
+                    try:
+                        imy_bytes = zf.read(nm)
+                        with zipfile.ZipFile(io.BytesIO(imy_bytes), "r") as z_imy:
+                            for sub_nm in z_imy.namelist():
+                                if sub_nm.endswith((".html", ".py", ".json")):
+                                    sub_raw = z_imy.read(sub_nm)
+                                    for m in re.finditer(rb"\b[Vv](1[1-9]\d|[2-9]\d\d)\b", sub_raw):
+                                        v_int = int(m.group(1))
+                                        if 110 <= v_int <= 999 and v_int > max_v_num:
+                                            max_v_num = v_int
+                    except Exception:
+                        pass
+
+        if max_v_num > 0:
+            res["detected_vtag"] = f"v{max_v_num}"
+    except Exception:
+        pass
+    return res
+
+
+def _match_apk_in_download_dir(apk_size: int, dex_crc: int, save_dir: str) -> dict:
+    """Проверяет, совпадает ли установленный base.apk по CRC/размеру с одним из скачанных .apk в папке Download."""
+    if not apk_size and not dex_crc:
+        return {}
+    dirs_to_check = [save_dir, DEFAULT_SAVE_DIR]
+    for d in dirs_to_check:
+        if not d or not os.path.isdir(d):
+            continue
+        try:
+            for entry in os.listdir(d):
+                if not entry.lower().endswith(".apk"):
+                    continue
+                fp = os.path.join(d, entry)
+                if not os.path.isfile(fp):
+                    continue
+                if apk_size and os.path.getsize(fp) == apk_size:
+                    m_b = re.search(r"(?:_#|_b)(\d+)", entry)
+                    m_v = re.search(r"_(v\d+(?:\.\d+)?)", entry, re.IGNORECASE)
+                    return {
+                        "matched_file": entry,
+                        "build_number": int(m_b.group(1)) if m_b else None,
+                        "version_tag": m_v.group(1).lower() if m_v else "",
+                    }
+                if dex_crc:
+                    try:
+                        with zipfile.ZipFile(fp, "r") as zf:
+                            if "classes.dex" in zf.namelist() and zf.getinfo("classes.dex").CRC == dex_crc:
+                                m_b = re.search(r"(?:_#|_b)(\d+)", entry)
+                                m_v = re.search(r"_(v\d+(?:\.\d+)?)", entry, re.IGNORECASE)
+                                return {
+                                    "matched_file": entry,
+                                    "build_number": int(m_b.group(1)) if m_b else None,
+                                    "version_tag": m_v.group(1).lower() if m_v else "",
+                                }
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    return {}
+
+
+def resolve_installed_apps_status(bridge_hints: dict = None, runs_list: list = None) -> dict:
+    cfg = load_config()
+    save_dir = cfg.get("save_dir") or DEFAULT_SAVE_DIR
+    runs = runs_list if runs_list is not None else _CACHED_RUNS_LIST
+
+    out = {}
+    for key, pkg in (("player", "com.jenny.player"), ("builder", "com.jenny.builder")):
+        raw = None
+        if bridge_hints and isinstance(bridge_hints.get(key), dict) and bridge_hints[key].get("installed"):
+            raw = bridge_hints[key]
+        else:
+            raw = _query_android_package_native(pkg)
+
+        if not raw or not raw.get("installed"):
+            out[key] = {"installed": False, "package": pkg}
+            continue
+
+        ver_name = (raw.get("versionName") or "").strip()
+        apk_path = (raw.get("apkPath") or "").strip()
+        upd_ms = int(raw.get("lastUpdateTime") or 0)
+        upd_str = ""
+        if upd_ms > 0:
+            try:
+                upd_str = datetime.datetime.fromtimestamp(upd_ms / 1000.0).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+
+        # 1. Проверяем, зашит ли уже штамп "#251 (v165...)" прямо в versionName
+        build_num = None
+        vtag = ""
+        commit_title = ""
+
+        m_stamp = re.search(r"#(\d+)\s*(?:\((.*)\))?", ver_name)
+        if m_stamp:
+            build_num = int(m_stamp.group(1))
+            commit_title = (m_stamp.group(2) or "").strip()
+            vtag = _extract_version_tag(commit_title) or _extract_version_tag(ver_name)
+
+        # 2. Сканируем сам установленный APK (/data/app/.../base.apk) и сверяем с файлами в Download и историей GitHub
+        scan = _scan_apk_binary_for_version_and_crc(apk_path)
+        if not vtag and scan.get("detected_vtag"):
+            vtag = scan["detected_vtag"]
+
+        dl_match = _match_apk_in_download_dir(scan.get("apk_size", 0), scan.get("dex_crc", 0), save_dir)
+        if not build_num and dl_match.get("build_number"):
+            build_num = dl_match["build_number"]
+        if not vtag and dl_match.get("version_tag"):
+            vtag = dl_match["version_tag"]
+
+        # 3. Если это целевой плеер (com.jenny.player) — связываем со списком сборок GitHub Actions
+        if key == "player" and runs:
+            if build_num:
+                for r in runs:
+                    if r.get("run_number") == build_num:
+                        commit_title = commit_title or r.get("title") or ""
+                        vtag = vtag or r.get("version_tag") or ""
+                        break
+            elif vtag:
+                # Ищем последнюю успешную сборку с этим же тегом версии (например v165 -> #251)
+                for r in runs:
+                    if r.get("conclusion") == "success" and (r.get("version_tag") or "").lower() == vtag.lower():
+                        build_num = r.get("run_number")
+                        commit_title = r.get("title") or ""
+                        break
+
+        # Формируем понятную человеку карточку установленной версии
+        if key == "player":
+            parts = []
+            if build_num:
+                parts.append(f"Сборка #{build_num}")
+            if vtag:
+                parts.append(f"версия {vtag}")
+            if not parts and ver_name:
+                parts.append(f"версия APK {ver_name}")
+            summary = " • ".join(parts) if parts else "Установлен (номер сборки определится после обновления)"
+            if commit_title:
+                summary += f" — «{commit_title}»"
+        else:
+            summary = f"Версия {ver_name}" if ver_name else "Установлен"
+
+        out[key] = {
+            "installed": True,
+            "package": pkg,
+            "versionName": ver_name,
+            "versionCode": raw.get("versionCode"),
+            "updated_at": upd_str,
+            "build_number": build_num,
+            "version_tag": vtag,
+            "title": commit_title,
+            "matched_apk_file": dl_match.get("matched_file") or "",
+            "human_summary": summary,
+        }
+
+    return out
+
+
 def gh_api(endpoint: str, method: str = "GET", payload: dict = None, token: str = "", repo: str = ""):
     cfg = load_config()
     tok = (token or cfg.get("token") or "").strip()
@@ -239,7 +469,7 @@ def gh_api(endpoint: str, method: str = "GET", payload: dict = None, token: str 
     url = endpoint if endpoint.startswith("http") else f"https://api.github.com/repos/{rep}/{endpoint.lstrip('/')}"
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "JennyBuilder-Android/1.4",
+        "User-Agent": "JennyBuilder-Android/1.5",
     }
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
@@ -275,7 +505,7 @@ def gh_download_bytes(endpoint: str, token: str = "", repo: str = "") -> bytes:
     url = endpoint if endpoint.startswith("http") else f"https://api.github.com/repos/{rep}/{endpoint.lstrip('/')}"
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "JennyBuilder-Android/1.4",
+        "User-Agent": "JennyBuilder-Android/1.5",
     }
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
@@ -359,7 +589,6 @@ def _git_blob_sha1(data: bytes) -> str:
 # ==============================================================================
 
 def _extract_python_symbols(text: str) -> dict:
-    """Возвращает {symbol_name: {'sig': str, 'body': str}} для всех def и class в Python-файле."""
     lines = text.splitlines()
     symbols = {}
     try:
@@ -376,7 +605,6 @@ def _extract_python_symbols(text: str) -> dict:
             elif isinstance(node, ast.ClassDef):
                 c_start = max(0, getattr(node, "lineno", 1) - 1)
                 c_end = getattr(node, "end_lineno", c_start + 1)
-                # Для самого класса сохраняем его методы отдельно как ClassName.method_name
                 has_methods = False
                 for sub in node.body:
                     if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -395,7 +623,6 @@ def _extract_python_symbols(text: str) -> dict:
                     }
         return symbols
     except Exception:
-        # Фолбэк на регулярки, если файл содержит синтаксическую ошибку
         cur_name = None
         cur_sig = None
         cur_lines = []
@@ -415,7 +642,6 @@ def _extract_python_symbols(text: str) -> dict:
 
 
 def _extract_brace_blocks(text: str, pattern: re.Pattern, kind_Formatter) -> dict:
-    """Универсальный парсер функций с фигурными скобками { ... } для JS/HTML и Java."""
     symbols = {}
     for m in pattern.finditer(text):
         name, sig = kind_Formatter(m)
@@ -623,7 +849,6 @@ def compare_local_map_with_github(local_map: dict, source_label: str, token: str
 
     commit_summary_parts = []
 
-    # 1. Новые файлы
     if added_files:
         report_lines.append(f"\n🟢 НОВЫЕ ФАЙЛЫ ({len(added_files)}):")
         for af in added_files:
@@ -633,14 +858,12 @@ def compare_local_map_with_github(local_map: dict, source_label: str, token: str
                 report_lines.append(f"      🟢 Новая функция: {fn}")
             commit_summary_parts.append(f"+{os.path.basename(af)}")
 
-    # 2. Удалённые файлы
     if removed_files:
         report_lines.append(f"\n🔴 УДАЛЁННЫЕ ФАЙЛЫ ({len(removed_files)}):")
         for rf in removed_files:
             report_lines.append(f"  - {rf}")
             commit_summary_parts.append(f"-{os.path.basename(rf)}")
 
-    # 3. Детальный разбор изменённых файлов и их функций
     if modified_paths:
         report_lines.append(f"\n🟡 ИЗМЕНЁННЫЕ ФАЙЛЫ И ФУНКЦИИ ({len(modified_paths)}):")
         for mp in modified_paths:
@@ -681,7 +904,6 @@ def compare_local_map_with_github(local_map: dict, source_label: str, token: str
                     for rl in f_diff["raw_diff_preview"]:
                         report_lines.append(f"    {rl}")
 
-            # Формируем краткую выжимку для поля описания коммита
             short_fn_notes = []
             for fn in f_diff["added_funcs"][:2]:
                 short_name = fn.split("(")[0].replace("async def ", "").replace("def ", "").replace("function ", "").strip()
@@ -787,11 +1009,35 @@ def _resolve_target_branch(token: str = "", repo: str = "") -> tuple:
     return def_br, ref_info["object"]["sha"]
 
 
+def _ensure_build_yml_stamps_version(file_map: dict):
+    """Автоматически добавляет шаг штамповки номера сборки (#252 + версия) в .github/workflows/build.yml при отправке на GitHub."""
+    yml_key = ".github/workflows/build.yml"
+    if yml_key in file_map:
+        try:
+            yml_str = file_map[yml_key].decode("utf-8", errors="replace")
+            if "Штамп номера сборки" not in yml_str and "gradle assembleDebug" in yml_str:
+                target = "    - name: Сборка APK\n      run: gradle assembleDebug"
+                stamp_lines = [
+                    "    - name: Штамп номера сборки и версии в APK",
+                    "      run: |",
+                    "        SHORT_MSG=$(git log -1 --pretty=%s | tr -d '\"\\' | cut -c1-48)",
+                    '        sed -i "s/versionName \".*\"/versionName \"#${GITHUB_RUN_NUMBER} (${SHORT_MSG})\"/" app/build.gradle',
+                    "",
+                    "    - name: Сборка APK",
+                    "      run: gradle assembleDebug",
+                ]
+                yml_str = yml_str.replace(target, "\n".join(stamp_lines))
+                file_map[yml_key] = yml_str.encode("utf-8")
+        except Exception:
+            pass
+
+
 def push_file_map_to_github(file_map: dict, commit_msg: str, token: str = "", repo: str = "") -> dict:
     if not file_map:
         raise ValueError(
             "Android скрыл файлы в этой папке (0 файлов). Нажми красную кнопку «🔓 Выдать Доступ ко всем файлам» вверху экрана и повтори!"
         )
+    _ensure_build_yml_stamps_version(file_map)
     branch_name, head_sha = _resolve_target_branch(token=token, repo=repo)
     commit_info = gh_api(f"git/commits/{head_sha}", "GET", token=token, repo=repo)
     base_tree_sha = commit_info["tree"]["sha"]
@@ -943,6 +1189,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_GET(self):
+        global _CACHED_RUNS_LIST
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
@@ -1027,6 +1274,8 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     if r.get("conclusion") == "success" and latest_good_summary is None:
                         latest_good_summary = item_dict
 
+                _CACHED_RUNS_LIST = runs_list
+
                 target_run_id = qs.get("run_id", [""])[0]
                 if not target_run_id and runs_list:
                     target_run_id = str(runs_list[0]["id"])
@@ -1069,12 +1318,15 @@ class BuilderHandler(BaseHTTPRequestHandler):
                         "failed_completed_at": failed_step_info.get("completed_at") if failed_step_info else "",
                     }
 
+                installed_status = resolve_installed_apps_status(None, runs_list)
+
                 self._send_json({
                     "status": "ok",
                     "repo": cfg["repo"],
                     "runs": runs_list,
                     "latest_good": latest_good_summary,
                     "active": active_details,
+                    "installed": installed_status,
                 })
             except Exception as e:
                 self._send_json({"status": "error", "error": str(e)})
@@ -1116,6 +1368,11 @@ class BuilderHandler(BaseHTTPRequestHandler):
             if path == "/api/config":
                 cfg = save_config(data)
                 return self._send_json({"status": "ok", "config": cfg})
+
+            if path == "/api/installed_info":
+                hints = data.get("bridge_hints") or {}
+                inst = resolve_installed_apps_status(hints, _CACHED_RUNS_LIST)
+                return self._send_json({"status": "ok", "installed": inst})
 
             if path == "/api/fs/mkdir":
                 parent = (data.get("parent") or DEFAULT_SAVE_DIR).strip()

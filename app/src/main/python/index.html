@@ -69,6 +69,10 @@
     background: #0d1821; border: 1px solid #39c5cf; border-radius: 10px;
     padding: 10px; margin-top: 8px; display: none;
   }
+  .lp-box {
+    background: #121d17; border: 1px solid #3fb950; border-radius: 10px;
+    padding: 9px 10px; margin-top: 8px;
+  }
   .err-pre {
     max-height: 240px; overflow-y: auto; background: #090d13;
     padding: 8px; border-radius: 6px; font-family: monospace;
@@ -102,6 +106,11 @@
     font-size: 11px; font-weight: 700; color: #79c0ff;
     margin: 6px 0 4px 0; display: flex; align-items: center; justify-content: space-between;
   }
+  .inst-badge {
+    display: inline-block; padding: 2px 6px; border-radius: 5px;
+    background: rgba(46,160,67,0.3); border: 1px solid #3fb950;
+    color: #7ee787; font-size: 10px; font-weight: bold; margin-left: 4px;
+  }
 </style>
 </head>
 <body>
@@ -121,7 +130,7 @@
 
 <div class="card">
   <div class="card-title">
-    <span>🛠️ JENNY BUILDER v1.4</span>
+    <span>🛠️ JENNY BUILDER v1.5</span>
     <button class="btn" style="width:auto;padding:4px 8px;font-size:11px;" onclick="toggleSettings()">⚙️ Настройки</button>
   </div>
   <div id="settingsArea" style="display:none;margin-top:6px;border-top:1px solid #30363d;padding-top:8px;">
@@ -141,6 +150,21 @@
     Репо: <b id="lblRepo" style="color:#fff;">...</b> |
     Токен: <b id="lblTokenState" style="color:#3fb950;">...</b> |
     Файлы: <b id="lblStoragePerm" style="color:#3fb950;" onclick="requestAndroidStoragePerm()">...</b>
+  </div>
+
+  <!-- LUCKY-PATCHER СКАНЕР УСТАНОВЛЕННЫХ СЕЙЧАС НА ТЕЛЕФОНЕ ВЕРСИЙ -->
+  <div class="lp-box" id="installedStatusBox">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+      <b style="color:#7ee787;font-size:12px;">📲 ЧТО СЕЙЧАС УСТАНОВЛЕНО НА ТЕЛЕФОНЕ:</b>
+      <button class="btn" style="width:auto;padding:3px 8px;font-size:10px;" onclick="refreshInstalledVersion()">🔄 Проверить</button>
+    </div>
+    <div style="font-size:11.5px;line-height:1.45;">
+      <div>🎵 <b>Jenny Player:</b> <span id="instPlayerMain" style="color:#fff;font-weight:bold;">проверка...</span></div>
+      <div id="instPlayerSub" style="font-size:10.5px;color:#8b949e;margin-bottom:4px;"></div>
+      <div style="border-top:1px dashed #233829;padding-top:4px;font-size:10.5px;color:#8b949e;">
+        🛠️ <b>Jenny Builder:</b> <span id="instBuilderMain" style="color:#d2a8ff;">v1.5</span>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -267,7 +291,7 @@
   </div>
 
   <div style="font-size:11px;color:#8b949e;margin:8px 0 4px 0;">
-    История сборок (нажми зелёную кнопку «📥 APK», чтобы сохранить APK в выбранную папку):
+    История сборок (зелёная метка «📲 УСТАНОВЛЕНА СЕЙЧАС» показывает какая сборка стоит на телефоне):
   </div>
   <div id="runsListContainer">⏳ Загрузка сборок...</div>
 </div>
@@ -299,6 +323,7 @@ let lastFailedJobId = null;
 let latestGoodBuildInfo = null;
 let lastDiffReportText = '';
 let lastDiffShortCommit = '';
+let currentInstalledState = null;
 
 function shortPath(p) {
   if (!p) return 'не выбрано';
@@ -315,6 +340,71 @@ function formatBuildBadge(bnum, vtag, title) {
     return head + ' («' + cleanTitle + '»)';
   }
   return head;
+}
+
+function collectBridgeAppHints() {
+  const hints = {};
+  try {
+    if (window.AndroidBridge && typeof window.AndroidBridge.getInstalledAppInfoJson === 'function') {
+      const pRaw = window.AndroidBridge.getInstalledAppInfoJson('com.jenny.player');
+      const bRaw = window.AndroidBridge.getInstalledAppInfoJson('com.jenny.builder');
+      if (pRaw) hints.player = JSON.parse(pRaw);
+      if (bRaw) hints.builder = JSON.parse(bRaw);
+    }
+  } catch (e) {}
+  return hints;
+}
+
+function renderInstalledStatus(inst) {
+  if (!inst) return;
+  currentInstalledState = inst;
+  const p = inst.player || {};
+  const b = inst.builder || {};
+
+  const pMain = document.getElementById('instPlayerMain');
+  const pSub = document.getElementById('instPlayerSub');
+  const bMain = document.getElementById('instBuilderMain');
+
+  if (!p.installed) {
+    pMain.textContent = 'Не установлен на телефоне ❌';
+    pMain.style.color = '#ff7b72';
+    pSub.textContent = '';
+  } else {
+    pMain.textContent = '🟢 ' + (p.human_summary || ('Версия ' + p.versionName));
+    pMain.style.color = '#7ee787';
+    let subParts = [];
+    if (p.updated_at) subParts.push('Установлен: ' + p.updated_at);
+    if (latestGoodBuildInfo && latestGoodBuildInfo.run_number && p.build_number) {
+      if (p.build_number >= latestGoodBuildInfo.run_number) {
+        subParts.push('✅ Стоит самая свежая сборка с GitHub');
+      } else {
+        subParts.push('⚠️ На GitHub есть более новая Сборка #' + latestGoodBuildInfo.run_number);
+      }
+    }
+    pSub.textContent = subParts.join(' • ');
+  }
+
+  if (b.installed) {
+    let bTxt = b.human_summary || ('v' + b.versionName);
+    if (b.updated_at) bTxt += ' (обновлён: ' + b.updated_at + ')';
+    bMain.textContent = bTxt;
+  }
+}
+
+async function refreshInstalledVersion() {
+  try {
+    const hints = collectBridgeAppHints();
+    const r = await fetch('/api/installed_info', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({bridge_hints: hints})
+    });
+    const d = await r.json();
+    if (d.status === 'ok' && d.installed) {
+      renderInstalledStatus(d.installed);
+      loadRuns();
+    }
+  } catch (e) {}
 }
 
 function updateButtonLabels() {
@@ -509,6 +599,7 @@ window.syncOnboardingPermsV165 = function() {
   const hadPerm = checkAndroidStorageState();
   if (hadPerm) {
     initApp();
+    refreshInstalledVersion();
   }
 };
 
@@ -566,7 +657,8 @@ async function initApp() {
       applyConfigToUi(d.config);
     }
   } catch (e) {}
-  loadRuns();
+  await loadRuns();
+  refreshInstalledVersion();
 }
 
 async function saveSettings() {
@@ -871,6 +963,7 @@ async function downloadRunApk(runId, runNum, verTag) {
         '• Файл сохранён в: ' + d.apk_path + ' (' + d.size_mb + ' МБ)',
         false
       );
+      refreshInstalledVersion();
     } else {
       showStatus('❌ Ошибка скачивания APK: ' + d.error, true);
     }
@@ -895,6 +988,11 @@ async function loadRuns() {
       latestGoodBuildInfo = d.latest_good;
       updateButtonLabels();
     }
+    if (d.installed) {
+      renderInstalledStatus(d.installed);
+    }
+
+    const instPlayerBuild = (currentInstalledState && currentInstalledState.player) ? currentInstalledState.player.build_number : null;
 
     const runs = d.runs || [];
     const listEl = document.getElementById('runsListContainer');
@@ -909,12 +1007,14 @@ async function loadRuns() {
         else { icon = '❌'; color = '#ff7b72'; }
       }
       const isSel = (d.active && d.active.run_id === item.id);
-      const borderCol = isSel ? '#a371f7' : '#21262d';
+      const isInstalledNow = (instPlayerBuild && item.run_number === instPlayerBuild);
+      const borderCol = isInstalledNow ? '#3fb950' : (isSel ? '#a371f7' : '#21262d');
       const vBadge = item.version_tag ? (' [' + item.version_tag + ']') : '';
+      const instBadgeHtml = isInstalledNow ? '<span class="inst-badge">📲 УСТАНОВЛЕНА СЕЙЧАС</span>' : '';
       const safeVer = (item.version_tag || '').replace(/'/g, '');
       html += '<div class="run-item" style="border-color:' + borderCol + ';" onclick="selectRun(' + item.id + ')">';
       html += '  <div style="flex:1;min-width:0;">';
-      html += '    <div style="font-weight:bold;color:' + color + ';font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + icon + ' Сборка #' + item.run_number + vBadge + ' — ' + item.title + '</div>';
+      html += '    <div style="font-weight:bold;color:' + color + ';font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + icon + ' Сборка #' + item.run_number + vBadge + instBadgeHtml + ' — ' + item.title + '</div>';
       html += '    <div style="font-size:10px;color:#8b949e;">Дата: ' + item.created_at + ' • (ID коммита в Git: ' + item.head_sha + ')</div>';
       html += '  </div>';
       if (item.conclusion === 'success') {
