@@ -1,0 +1,2 @@
+rootProject.name = 'JennyBuilder'
+include ':app'
