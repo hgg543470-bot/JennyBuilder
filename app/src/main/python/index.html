@@ -56,10 +56,28 @@
     border: 1px solid #21262d; margin-bottom: 6px;
     display: flex; justify-content: space-between; align-items: center; gap: 6px;
   }
+  body { padding-bottom: 108px !important; }
   .status-box {
-    padding: 8px 10px; border-radius: 8px; background: #090d13;
-    border: 1px solid #30363d; font-size: 11px; white-space: pre-wrap;
-    color: #7ee787; margin-top: 8px; display: none; line-height: 1.4;
+    position: fixed; bottom: 8px; left: 10px; right: 10px; z-index: 8895;
+    padding: 9px 12px; border-radius: 11px;
+    background: rgba(9, 13, 19, 0.96);
+    backdrop-filter: blur(8px);
+    border: 1.5px solid #3fb950;
+    font-size: 11.5px; white-space: pre-wrap;
+    color: #7ee787; display: block; line-height: 1.38;
+    box-shadow: 0 -4px 22px rgba(0, 0, 0, 0.85);
+    max-height: 92px; overflow-y: auto;
+    transition: border-color 0.2s ease, color 0.2s ease;
+  }
+  .compact-top-bar {
+    position: fixed; top: 6px; left: 10px; right: 10px; z-index: 8890;
+    background: rgba(18, 24, 34, 0.96);
+    backdrop-filter: blur(8px);
+    border: 1px solid #a371f7; border-radius: 10px;
+    padding: 7px 10px; display: none;
+    align-items: center; justify-content: space-between; gap: 8px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.8);
+    font-size: 11.5px;
   }
   .err-box {
     background: #1a0d10; border: 1px solid #ff7b72; border-radius: 10px;
@@ -146,11 +164,27 @@
 </head>
 <body>
 
-<!-- ЖИВАЯ ШКАЛА ВЫПОЛНЯЕМЫХ ДЕЙСТВИЙ (PROGRESS BAR) -->
+<!-- КОМПАКТНАЯ ВЕРХНЯЯ ПЛАШКА (ПОЯВЛЯЕТСЯ КОГДА ВЕРХНЯЯ КАРТОЧКА УХОДИТ ИЗ ПОЛЯ ЗРЕНИЯ) -->
+<div id="compactTopBar" class="compact-top-bar">
+  <div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;" onclick="window.scrollTo({top:0,behavior:'smooth'});showStatus('⬆️ Возврат к верхней панели настроек и версий',false);">
+    <b style="color:#d2a8ff;">🛠️ JB</b>
+    <span style="color:#8b949e;">|</span>
+    <span id="compactInstTxt" style="color:#7ee787;font-weight:700;overflow:hidden;text-overflow:ellipsis;">🎵 Проверка...</span>
+    <span style="color:#8b949e;">|</span>
+    <span id="compactRepoTxt" style="color:#79c0ff;font-size:10.5px;overflow:hidden;text-overflow:ellipsis;">...</span>
+  </div>
+  <div style="display:flex;gap:5px;flex-shrink:0;">
+    <button class="btn" style="width:auto;padding:3px 7px;font-size:10.5px;" onclick="refreshInstalledVersion()">🔄</button>
+    <button class="btn btn-purple" style="width:auto;padding:3px 8px;font-size:10.5px;" onclick="window.scrollTo({top:0,behavior:'smooth'});setTimeout(()=>{const el=document.getElementById('settingsArea');if(el&&el.style.display==='none')toggleSettings();},250);">⚙️</button>
+  </div>
+</div>
+
+<!-- ЖИВАЯ ШКАЛА ВЫПОЛНЯЕМЫХ ДЕЙСТВИЙ (PROGRESS BAR) С КНОПКОЙ ОТМЕНЫ СКАЧИВАНИЯ -->
 <div id="liveProgressBanner" class="prog-wrap">
-  <div style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;font-weight:bold;color:#79c0ff;">
-    <span id="progTitleTxt">⏳ Выполнение...</span>
-    <span id="progPctTxt" style="color:#7ee787;">0% • 0.0 сек</span>
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11.5px;font-weight:bold;color:#79c0ff;">
+    <span id="progTitleTxt" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">⏳ Выполнение...</span>
+    <span id="progPctTxt" style="color:#7ee787;flex-shrink:0;">0% • 0.0 сек</span>
+    <button id="btnCancelDownload" class="btn btn-red" style="display:none;width:auto;padding:3px 9px;font-size:10.5px;border-radius:7px;flex-shrink:0;" onclick="cancelActiveDownload()">⏹ Отмена</button>
   </div>
   <div class="prog-track">
     <div id="progBarFill" class="prog-fill"></div>
@@ -171,9 +205,9 @@
   </button>
 </div>
 
-<div class="card">
+<div class="card" id="topHeaderCard">
   <div class="card-title">
-    <span>🛠️ JENNY BUILDER v1.7</span>
+    <span>🛠️ JENNY BUILDER v1.8</span>
     <button class="btn" style="width:auto;padding:4px 8px;font-size:11px;" onclick="toggleSettings()">⚙️ Настройки</button>
   </div>
   <div id="settingsArea" style="display:none;margin-top:6px;border-top:1px solid #30363d;padding-top:8px;">
@@ -313,7 +347,6 @@
     </div>
   </div>
 
-  <div id="actionStatusBox" class="status-box"></div>
 </div>
 
 <!-- 2. ПАПКА КУДА СОХРАНЯТЬ APK И АРХИВЫ + УСТАНОВЩИК APK -->
@@ -357,7 +390,7 @@
     История сборок (нажми «📲 Установить», чтобы скачать в 32 потока и сразу открыть установщик):
   </div>
   <label id="lblSkipSoLibs" style="display:flex;align-items:center;gap:8px;background:#0d141d;border:1px solid #39c5cf;padding:8px 10px;border-radius:9px;margin:6px 0 8px 0;font-size:11.5px;color:#e6edf3;cursor:pointer;user-select:none;">
-    <input type="checkbox" id="chkSkipSoLibs" onchange="localStorage.setItem('jb_skip_so_zip', this.checked ? '1' : '0')" style="width:17px;height:17px;accent-color:#39c5cf;flex-shrink:0;">
+    <input type="checkbox" id="chkSkipSoLibs" onchange="localStorage.setItem('jb_skip_so_zip', this.checked ? '1' : '0');showStatus(this.checked ? '🪶 Включен режим: скачивать .zip БЕЗ тяжелых бинарников .so (оставить все исходники .go/.cpp/.c/.h + паспорт .so)' : '📦 Включен режим: скачивать ПОЛНЫЙ .zip архив (все исходники + скомпилированные .so)', false);" style="width:17px;height:17px;accent-color:#39c5cf;flex-shrink:0;">
     <span>🚫 <b>Без тяжелых .so при скачивании .zip</b> <span style="color:#8b949e;">(оставить все исходники <code>.go/.cpp/.c/.h/.py/.js/.java</code> + паспорт <code>.so</code> — ~0.5 МБ вместо 33 МБ)</span></span>
   </label>
   <div id="runsListContainer">⏳ Загрузка сборок...</div>
@@ -452,6 +485,9 @@
   </div>
 </div>
 
+<!-- ЗАКРЕПЛЕННАЯ ВНИЗУ СТРОКА СОСТОЯНИЯ -->
+<div id="actionStatusBox" class="status-box">🟢 Готов к работе. Выбери действие — каждый шаг будет отображаться здесь.</div>
+
 <script>
 let currentBrowserMode = 'pick_save_dir';
 let currentBrowseDir = '/storage/emulated/0/Download';
@@ -479,11 +515,68 @@ let pendingMtPkgName = '';
 // Опрос живого прогресс-бара
 let progressPollTimer = null;
 
-function startProgressPolling(initialTitle, initialDetail) {
+let isCurrentTaskCancellable = false;
+
+function syncTopBarsLayout() {
+  const topCard = document.getElementById('topHeaderCard');
+  const compactBar = document.getElementById('compactTopBar');
+  const progBanner = document.getElementById('liveProgressBanner');
+  if (!topCard || !compactBar) return;
+  const rect = topCard.getBoundingClientRect();
+  const outOfView = (rect.bottom <= 6);
+  compactBar.style.display = outOfView ? 'flex' : 'none';
+  if (progBanner) {
+    progBanner.style.top = outOfView ? '44px' : '6px';
+  }
+}
+
+window.addEventListener('scroll', syncTopBarsLayout, {passive: true});
+window.addEventListener('resize', syncTopBarsLayout, {passive: true});
+
+async function cancelActiveDownload() {
+  const btn = document.getElementById('btnCancelDownload');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Отмена...';
+  }
+  showStatus('⏹ Отменяю скачивание и удаляю недокачанный временный файл...', true);
+  try {
+    const r = await fetch('/api/cancel_download', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({})
+    });
+    const d = await r.json();
+    stopProgressPolling();
+    const remCount = (d.removed_files && d.removed_files.length) ? (' (удалено временных файлов: ' + d.removed_files.length + ')') : '';
+    showStatus('⏹ Скачивание отменено пользователем. Недокачанный файл полностью удалён' + remCount + '.', true);
+  } catch (e) {
+    stopProgressPolling();
+    showStatus('⏹ Запрос отмены отправлен: ' + e, true);
+  }
+}
+
+function startProgressPolling(initialTitle, initialDetail, cancellable) {
+  const titleStr = String(initialTitle || '⏳ Выполнение...');
+  if (typeof cancellable === 'undefined') {
+    const isPush = /Отправка|Экспорт/i.test(titleStr);
+    const isDl = /Скачивание|Исходники|Импорт|APK/i.test(titleStr);
+    isCurrentTaskCancellable = (!isPush && isDl);
+  } else {
+    isCurrentTaskCancellable = Boolean(cancellable);
+  }
+
   const wrap = document.getElementById('liveProgressBanner');
+  const cancelBtn = document.getElementById('btnCancelDownload');
+  if (cancelBtn) {
+    cancelBtn.disabled = false;
+    cancelBtn.textContent = '⏹ Отмена';
+    cancelBtn.style.display = isCurrentTaskCancellable ? 'inline-block' : 'none';
+  }
   if (wrap) {
     wrap.style.display = 'block';
-    document.getElementById('progTitleTxt').textContent = initialTitle || '⏳ Выполнение...';
+    syncTopBarsLayout();
+    document.getElementById('progTitleTxt').textContent = titleStr;
     document.getElementById('progPctTxt').textContent = '2% • 0.0 сек';
     document.getElementById('progBarFill').style.width = '2%';
     document.getElementById('progDetailTxt').textContent = initialDetail || 'Запуск...';
@@ -497,10 +590,19 @@ function startProgressPolling(initialTitle, initialDetail) {
         const p = d.progress;
         if (p.active) {
           if (wrap) wrap.style.display = 'block';
-          document.getElementById('progTitleTxt').textContent = p.title || '⏳ Выполнение...';
+          syncTopBarsLayout();
+          document.getElementById('progTitleTxt').textContent = p.title || titleStr;
           document.getElementById('progPctTxt').textContent = p.percent + '% • ' + (p.elapsed_sec || 0) + ' сек';
           document.getElementById('progBarFill').style.width = p.percent + '%';
           document.getElementById('progDetailTxt').textContent = p.detail || '';
+          if (cancelBtn) {
+            const showCanc = (typeof p.cancellable === 'boolean') ? p.cancellable : isCurrentTaskCancellable;
+            cancelBtn.style.display = showCanc ? 'inline-block' : 'none';
+          }
+          if (p.detail) {
+            showStatus('⏳ ' + (p.title || titleStr) + ' (' + p.percent + '% • ' + (p.elapsed_sec || 0) + ' сек)
+• ' + p.detail, false);
+          }
         }
       }
     } catch (e) {}
@@ -513,9 +615,11 @@ function stopProgressPolling() {
     progressPollTimer = null;
   }
   const wrap = document.getElementById('liveProgressBanner');
+  const cancelBtn = document.getElementById('btnCancelDownload');
+  if (cancelBtn) cancelBtn.style.display = 'none';
   if (wrap) {
     document.getElementById('progBarFill').style.width = '100%';
-    setTimeout(() => { wrap.style.display = 'none'; }, 650);
+    setTimeout(() => { wrap.style.display = 'none'; }, 550);
   }
 }
 
@@ -684,6 +788,7 @@ function closeComparePicker() {
 }
 
 function selectCompareOption(spec) {
+  const sideName = (activeComparePickerSide === 'base') ? 'Источник А (База)' : 'Источник Б (Цель)';
   if (activeComparePickerSide === 'base') {
     compareBaseSpec = spec;
   } else {
@@ -691,6 +796,9 @@ function selectCompareOption(spec) {
   }
   refreshCompareLabelsUi();
   closeComparePicker();
+  const chosenLbl = (activeComparePickerSide === 'base') ? compareBaseLabel : compareTargetLabel;
+  showStatus('🔬 Выбран ' + sideName + ' для сравнения:
+• ' + chosenLbl, false);
 }
 
 // ==============================================================================
@@ -819,7 +927,18 @@ function renderInstalledStatus(inst) {
       if (b.updated_at) bTxt += ' (обновлён: ' + b.updated_at + ')';
       bMain.textContent = bTxt;
     }
+    const cInst = document.getElementById('compactInstTxt');
+    if (cInst) {
+      if (!p.installed) {
+        cInst.textContent = '🎵 Player: не установлен';
+        cInst.style.color = '#ff7b72';
+      } else {
+        cInst.textContent = '🎵 Стоит: ' + (p.build_number ? ('Сборка #' + p.build_number) : ('v' + p.versionName));
+        cInst.style.color = '#7ee787';
+      }
+    }
     refreshCompareLabelsUi();
+    syncTopBarsLayout();
   } catch (e) {}
 }
 
@@ -1068,7 +1187,9 @@ function showStatus(msg, isErr) {
 
 function toggleSettings() {
   const el = document.getElementById('settingsArea');
-  el.style.display = (el.style.display === 'none') ? 'block' : 'none';
+  const opening = (el.style.display === 'none');
+  el.style.display = opening ? 'block' : 'none';
+  showStatus(opening ? '⚙️ Открыта панель настроек репозитория и токена GitHub' : '⚙️ Панель настроек скрыта', false);
 }
 
 async function rediscoverGitToken() {
@@ -1092,6 +1213,8 @@ function applyConfigToUi(c) {
   document.getElementById('cfgRepo').value = c.repo || '';
   document.getElementById('cfgToken').value = c.token || '';
   document.getElementById('lblRepo').textContent = c.repo || 'не задан';
+  const cRepo = document.getElementById('compactRepoTxt');
+  if (cRepo) cRepo.textContent = '☁️ ' + ((c.repo || '').split('/').pop() || 'GitHub');
   document.getElementById('lblTokenState').textContent = c.token ? 'Подключён ✅' : 'Не найден ❌';
   document.getElementById('lblTokenState').style.color = c.token ? '#3fb950' : '#ff7b72';
   document.getElementById('saveDirInput').value = c.save_dir || '/storage/emulated/0/Download';
@@ -1460,6 +1583,12 @@ async function downloadBuildSourceZip(runNum, btnEl) {
         '• ' + modeInfo,
         false
       );
+    } else if (d.status === 'cancelled') {
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.textContent = oldText;
+      }
+      showStatus('⏹ Скачивание исходников #' + runNum + ' отменено. Недокачанный файл удалён.', true);
     } else {
       if (btnEl) {
         btnEl.disabled = false;
@@ -1502,6 +1631,8 @@ async function downloadRunApk(runId, runNum, autoInstallAfter) {
       if (autoInstallAfter) {
         openMtInstallerForApk(d.apk_path);
       }
+    } else if (d.status === 'cancelled') {
+      showStatus('⏹ Скачивание APK #' + runNum + ' отменено. Недокачанный файл удалён.', true);
     } else {
       showStatus('❌ Ошибка скачивания APK: ' + d.error, true);
     }
@@ -1608,6 +1739,12 @@ async function loadRuns() {
 function selectRun(runId) {
   selectedRunId = String(runId);
   lastFailedJobId = null;
+  const found = allLoadedRuns.find(r => String(r.id) === String(runId));
+  if (found) {
+    showStatus('🔎 Выбрана Сборка #' + found.run_number + ' (ID: ' + found.head_sha + ') — «' + found.title + '». Загружаю этапы...', false);
+  } else {
+    showStatus('🔎 Загружаю этапы сборки ID ' + runId + '...', false);
+  }
   loadRuns();
 }
 
@@ -1664,6 +1801,7 @@ let fsSortByNewest = true;
 
 function toggleFsSortMode() {
   fsSortByNewest = !fsSortByNewest;
+  showStatus(fsSortByNewest ? '🕒 Сортировка в проводнике: сначала самые свежие файлы' : '🔤 Сортировка в проводнике: по алфавиту', false);
   const btn = document.getElementById('btnFsSortMode');
   if (btn) {
     btn.textContent = fsSortByNewest ? '🕒 Новые вверху' : '🔤 По имени';
@@ -1769,6 +1907,7 @@ async function loadBrowserDir(dirPath) {
     parentBrowseDir = d.parent_dir;
     document.getElementById('fsCurrentDir').textContent = '📍 ' + currentBrowseDir;
     renderBrowserItems();
+    showStatus('📂 Открыта папка: ' + currentBrowseDir, false);
   } catch (e) {}
 }
 
@@ -1920,7 +2059,8 @@ function selectApkFromBrowser(fullApkPath) {
 }
 
 function confirmCurrentDir() {
-  if (currentBrowserMode === 'pick_source_dir') {
+  const isSrc = (currentBrowserMode === 'pick_source_dir');
+  if (isSrc) {
     document.getElementById('sourceFolderInput').value = currentBrowseDir;
   } else {
     document.getElementById('saveDirInput').value = currentBrowseDir;
@@ -1928,6 +2068,7 @@ function confirmCurrentDir() {
   updateButtonLabels();
   saveSettings();
   closeBrowser();
+  showStatus(isSrc ? ('📁 Выбрана рабочая папка проекта:\n• ' + currentBrowseDir) : ('💾 Выбрана папка сохранения файлов:\n• ' + currentBrowseDir), false);
 }
 
 async function promptMkdir() {

@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8795
-EXT_CONFIG_PATH = "/storage/emulated/0/Download/.jenny_builder_cfg.json"
+EXT_CONFIG_PATH = "/storage/emulated/0/JENNY/JennyBuilder/config.json"
 DEFAULT_PROJECT_DIR = "/storage/emulated/0/scripts/JennyPlayer"
 DEFAULT_SAVE_DIR = "/storage/emulated/0/Download"
 DEFAULT_REPO = "hgg543470-bot/JennyPlayer"
@@ -33,24 +33,84 @@ EXCLUDE_FILES = {"omni_full_trace.log", "omni_simple.log", "shizuku_window_dump.
 _MEM_CFG = {}
 _CACHED_RUNS_LIST = []
 _PROGRESS_LOCK = _threading_boot.Lock()
+_CANCEL_DOWNLOAD_EVENT = _threading_boot.Event()
+_TEMP_FILES_LOCK = _threading_boot.Lock()
+_ACTIVE_TEMP_FILES = set()
+
 _TASK_PROGRESS = {
     "active": False,
     "percent": 0,
     "title": "",
     "detail": "",
     "started_at": 0.0,
+    "cancellable": False,
 }
 
 
-def set_progress(active: bool, percent: int = 0, title: str = "", detail: str = ""):
+class DownloadCancelledError(Exception):
+    pass
+
+
+def register_temp_download_file(path: str):
+    if not path:
+        return
+    with _TEMP_FILES_LOCK:
+        _ACTIVE_TEMP_FILES.add(path)
+
+
+def unregister_temp_download_file(path: str):
+    if not path:
+        return
+    with _TEMP_FILES_LOCK:
+        _ACTIVE_TEMP_FILES.discard(path)
+
+
+def cleanup_cancelled_temp_files() -> list:
+    removed = []
+    with _TEMP_FILES_LOCK:
+        paths = list(_ACTIVE_TEMP_FILES)
+        _ACTIVE_TEMP_FILES.clear()
+    for p in paths:
+        try:
+            if p and os.path.exists(p):
+                os.remove(p)
+                removed.append(p)
+        except Exception:
+            pass
+    return removed
+
+
+def reset_download_cancel():
+    _CANCEL_DOWNLOAD_EVENT.clear()
+
+
+def trigger_download_cancel() -> list:
+    _CANCEL_DOWNLOAD_EVENT.set()
+    removed = cleanup_cancelled_temp_files()
+    set_progress(False, 0, "⏹ Отменено", "Загрузка отменена пользователем", cancellable=False)
+    return removed
+
+
+def check_download_cancelled():
+    if _CANCEL_DOWNLOAD_EVENT.is_set():
+        cleanup_cancelled_temp_files()
+        raise DownloadCancelledError("Загрузка отменена пользователем")
+
+
+def set_progress(active: bool, percent: int = 0, title: str = "", detail: str = "", cancellable: bool = None):
     global _TASK_PROGRESS
     with _PROGRESS_LOCK:
         now = time.time()
         started = _TASK_PROGRESS.get("started_at", 0.0)
+        prev_cancel = _TASK_PROGRESS.get("cancellable", False)
         if active and not _TASK_PROGRESS.get("active"):
             started = now
         elif not active:
             started = 0.0
+            prev_cancel = False
+        is_canc = prev_cancel if (cancellable is None) else bool(cancellable)
+        if not active:
+            is_canc = False
         _TASK_PROGRESS = {
             "active": bool(active),
             "percent": max(0, min(100, int(percent))),
@@ -58,6 +118,7 @@ def set_progress(active: bool, percent: int = 0, title: str = "", detail: str = 
             "detail": str(detail or ""),
             "started_at": started,
             "elapsed_sec": round(now - started, 1) if (active and started > 0) else 0.0,
+            "cancellable": is_canc,
         }
 
 
@@ -439,27 +500,28 @@ def gh_api(endpoint: str, method: str = "GET", payload: dict = None, token: str 
 # СКАЧИВАНИЕ В 32 ПОТОКА С ПРОГРЕСС-БАРОМ В РЕАЛЬНОМ ВРЕМЕНИ
 # ==============================================================================
 
-def gh_download_bytes(endpoint: str, token: str = "", repo: str = "", task_title: str = "Скачивание с GitHub", threads: int = 32) -> bytes:
+def gh_download_bytes(endpoint: str, token: str = "", repo: str = "", task_title: str = "Скачивание с GitHub", threads: int = 32, cancellable: bool = True) -> bytes:
     cfg = load_config()
     tok = (token or cfg.get("token") or "").strip()
     rep = (repo or cfg.get("repo") or DEFAULT_REPO).strip()
     url = endpoint if endpoint.startswith("http") else f"https://api.github.com/repos/{rep}/{endpoint.lstrip('/')}"
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "JennyBuilder-Android/1.7",
+        "User-Agent": "JennyBuilder-Android/1.8",
     }
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
 
-    set_progress(True, 2, task_title, "Запрос прямой CDN-ссылки у GitHub...")
+    check_download_cancelled()
+    set_progress(True, 2, task_title, "Получение прямой CDN-ссылки у GitHub...", cancellable=cancellable)
 
-    # Шаг 1: проверяем редирект на CDN/Azure Blob (для артефактов и zipball)
     direct_url = url
     need_auth_on_direct = True
     try:
         no_redir_opener = urllib.request.build_opener(_StopRedirectHandler())
         req_init = urllib.request.Request(url, headers=headers, method="GET")
-        no_redir_opener.open(req_init, timeout=30)
+        with no_redir_opener.open(req_init, timeout=30) as r_init:
+            direct_url = r_init.geturl() or url
     except urllib.error.HTTPError as he:
         if he.code in (301, 302, 303, 307, 308):
             loc = he.headers.get("Location")
@@ -467,100 +529,39 @@ def gh_download_bytes(endpoint: str, token: str = "", repo: str = "", task_title
                 direct_url = loc
                 new_host = (urllib.parse.urlparse(loc).hostname or "").lower()
                 is_signed = ("sig=" in loc) or ("X-Amz-" in loc) or ("se=" in loc)
-                is_gh = new_host == "github.com" or new_host.endswith(".github.com")
-                if not is_gh or is_signed:
+                is_gh_api = (new_host == "api.github.com")
+                if not is_gh_api or is_signed:
                     need_auth_on_direct = False
     except Exception:
         pass
 
-    dl_headers = {"User-Agent": "JennyBuilder-Android/1.7"}
+    check_download_cancelled()
+    dl_headers = {"User-Agent": "JennyBuilder-Android/1.8"}
     if need_auth_on_direct and tok:
         dl_headers["Authorization"] = f"Bearer {tok}"
 
-    # Шаг 2: Пробуем определить размер и поддержку Range для 32-поточного скачивания
     total_size = 0
     supports_range = False
+    prefetched_stream_bytes = None
+
     try:
         probe_hdrs = dict(dl_headers)
-        probe_hdrs["Range"] = "bytes=0-0"
+        probe_hdrs["Range"] = "bytes=0-3"
         req_probe = urllib.request.Request(direct_url, headers=probe_hdrs, method="GET")
         opener = urllib.request.build_opener(_NoAuthRedirectHandler())
-        with opener.open(req_probe, timeout=25) as resp:
+        with opener.open(req_probe, timeout=35) as resp:
             code = getattr(resp, "status", None) or resp.getcode()
             cr = resp.headers.get("Content-Range") or ""
             if code == 206 and "/" in cr:
                 total_size = int(cr.split("/")[-1].strip())
                 supports_range = True
-            elif resp.headers.get("Content-Length"):
-                total_size = int(resp.headers.get("Content-Length"))
-    except Exception:
-        pass
-
-    # Шаг 3: Если файл > 300 КБ и сервер отдаёт Range (206) — качаем в 32 параллельных потока!
-    if supports_range and total_size > 300 * 1024 and threads > 1:
-        total_mb = round(total_size / (1024.0 * 1024.0), 2)
-        set_progress(True, 5, task_title, f"Старт загрузки в {threads} потоков ({total_mb} МБ)...")
-        t0 = time.time()
-        part_size = (total_size + threads - 1) // threads
-        chunks = [None] * threads
-        downloaded_bytes = [0] * threads
-        prog_lock = _threading_boot.Lock()
-
-        def _update_multi_prog():
-            with prog_lock:
-                done_b = sum(downloaded_bytes)
-            pct = min(98, max(5, int((done_b * 100) / max(1, total_size))))
-            done_mb = round(done_b / (1024.0 * 1024.0), 2)
-            el = max(0.1, time.time() - t0)
-            spd = round(done_mb / el, 1)
-            set_progress(True, pct, task_title, f"⚡ {threads} потоков: {done_mb} / {total_mb} МБ ({pct}%) • {spd} МБ/с")
-
-        def fetch_part(idx: int):
-            start_b = idx * part_size
-            end_b = min(total_size - 1, start_b + part_size - 1)
-            if start_b >= total_size:
-                chunks[idx] = b""
-                return
-            for attempt in range(4):
-                try:
-                    p_hdrs = dict(dl_headers)
-                    p_hdrs["Range"] = f"bytes={start_b}-{end_b}"
-                    rq = urllib.request.Request(direct_url, headers=p_hdrs, method="GET")
-                    op = urllib.request.build_opener(_NoAuthRedirectHandler())
-                    with op.open(rq, timeout=90) as r:
-                        buf = bytearray()
-                        while True:
-                            blk = r.read(65536)
-                            if not blk:
-                                break
-                            buf.extend(blk)
-                            downloaded_bytes[idx] = len(buf)
-                            _update_multi_prog()
-                        chunks[idx] = bytes(buf)
-                        return
-                except Exception:
-                    downloaded_bytes[idx] = 0
-                    time.sleep(0.6)
-            raise RuntimeError(f"Не удалось скачать сегмент #{idx} после 4 попыток")
-
-        with ThreadPoolExecutor(max_workers=threads) as ex:
-            list(ex.map(fetch_part, range(threads)))
-
-        set_progress(True, 99, task_title, f"Склейка и распаковка ({total_mb} МБ)...")
-        return b"".join(chunks)
-
-    # Шаг 4: Фолбэк — потоковое скачивание с обновлением прогресс-бара по чанкам
-    last_err = None
-    for attempt in range(4):
-        try:
-            req = urllib.request.Request(url, headers=headers, method="GET")
-            opener = urllib.request.build_opener(_NoAuthRedirectHandler())
-            t0 = time.time()
-            with opener.open(req, timeout=180) as resp:
-                clen = int(resp.headers.get("Content-Length") or total_size or 0)
+            elif code == 200:
+                clen = int(resp.headers.get("Content-Length") or 0)
+                t0 = time.time()
                 buf = bytearray()
                 while True:
-                    chunk = resp.read(65536)
+                    check_download_cancelled()
+                    chunk = resp.read(262144)
                     if not chunk:
                         break
                     buf.extend(chunk)
@@ -570,14 +571,121 @@ def gh_download_bytes(endpoint: str, token: str = "", repo: str = "", task_title
                     if clen > 0:
                         pct = min(98, max(5, int((len(buf) * 100) / clen)))
                         tot_mb = round(clen / (1024.0 * 1024.0), 2)
-                        set_progress(True, pct, task_title, f"Скачано: {done_mb} / {tot_mb} МБ ({pct}%) • {spd} МБ/с")
+                        set_progress(True, pct, task_title, f"⚡ Поток CDN: {done_mb} / {tot_mb} МБ ({pct}%) • {spd} МБ/с", cancellable=cancellable)
                     else:
-                        set_progress(True, 50, task_title, f"Скачано: {done_mb} МБ • {spd} МБ/с")
+                        set_progress(True, 60, task_title, f"⚡ Поток CDN: {done_mb} МБ • {spd} МБ/с", cancellable=cancellable)
+                prefetched_stream_bytes = bytes(buf)
+    except DownloadCancelledError:
+        raise
+    except Exception:
+        pass
+
+    if prefetched_stream_bytes is not None and len(prefetched_stream_bytes) > 0:
+        set_progress(True, 99, task_title, "Проверка целостности данных...", cancellable=cancellable)
+        return prefetched_stream_bytes
+
+    if supports_range and total_size > 256 * 1024 and threads > 1:
+        total_mb = round(total_size / (1024.0 * 1024.0), 2)
+        set_progress(True, 5, task_title, f"🚀 Старт загрузки в {threads} потоков ({total_mb} МБ)...", cancellable=cancellable)
+        t0 = time.time()
+        part_size = (total_size + threads - 1) // threads
+        chunks = [None] * threads
+        downloaded_bytes = [0] * threads
+        prog_lock = _threading_boot.Lock()
+
+        def _update_multi_prog():
+            if _CANCEL_DOWNLOAD_EVENT.is_set():
+                return
+            with prog_lock:
+                done_b = sum(downloaded_bytes)
+            pct = min(98, max(5, int((done_b * 100) / max(1, total_size))))
+            done_mb = round(done_b / (1024.0 * 1024.0), 2)
+            el = max(0.1, time.time() - t0)
+            spd = round(done_mb / el, 1)
+            set_progress(True, pct, task_title, f"⚡ {threads} потоков: {done_mb} / {total_mb} МБ ({pct}%) • {spd} МБ/с", cancellable=cancellable)
+
+        def fetch_part(idx: int):
+            check_download_cancelled()
+            start_b = idx * part_size
+            end_b = min(total_size - 1, start_b + part_size - 1)
+            expected_len = (end_b - start_b + 1)
+            if start_b >= total_size or expected_len <= 0:
+                chunks[idx] = b""
+                return
+            for attempt in range(4):
+                check_download_cancelled()
+                try:
+                    p_hdrs = dict(dl_headers)
+                    p_hdrs["Range"] = f"bytes={start_b}-{end_b}"
+                    rq = urllib.request.Request(direct_url, headers=p_hdrs, method="GET")
+                    op = urllib.request.build_opener(_NoAuthRedirectHandler())
+                    with op.open(rq, timeout=90) as r:
+                        r_code = getattr(r, "status", None) or r.getcode()
+                        if r_code != 206:
+                            raise RuntimeError(f"CDN вернул HTTP {r_code} вместо 206 Partial Content")
+                        buf = bytearray()
+                        while True:
+                            check_download_cancelled()
+                            blk = r.read(131072)
+                            if not blk:
+                                break
+                            buf.extend(blk)
+                            downloaded_bytes[idx] = len(buf)
+                            _update_multi_prog()
+                        if len(buf) != expected_len:
+                            raise RuntimeError(f"Неполный сегмент #{idx}: {len(buf)} из {expected_len}")
+                        chunks[idx] = bytes(buf)
+                        return
+                except DownloadCancelledError:
+                    raise
+                except Exception:
+                    downloaded_bytes[idx] = 0
+                    time.sleep(0.4)
+            raise RuntimeError(f"Не удалось скачать сегмент #{idx} в многопоточном режиме")
+
+        try:
+            with ThreadPoolExecutor(max_workers=threads) as ex:
+                list(ex.map(fetch_part, range(threads)))
+            check_download_cancelled()
+            set_progress(True, 99, task_title, f"Склейка и проверка ({total_mb} МБ)...", cancellable=cancellable)
+            return b"".join(chunks)
+        except DownloadCancelledError:
+            raise
+        except Exception:
+            pass
+
+    last_err = None
+    for attempt in range(4):
+        check_download_cancelled()
+        try:
+            req = urllib.request.Request(direct_url, headers=dl_headers, method="GET")
+            opener = urllib.request.build_opener(_NoAuthRedirectHandler())
+            t0 = time.time()
+            with opener.open(req, timeout=180) as resp:
+                clen = int(resp.headers.get("Content-Length") or total_size or 0)
+                buf = bytearray()
+                while True:
+                    check_download_cancelled()
+                    chunk = resp.read(262144)
+                    if not chunk:
+                        break
+                    buf.extend(chunk)
+                    done_mb = round(len(buf) / (1024.0 * 1024.0), 2)
+                    el = max(0.1, time.time() - t0)
+                    spd = round(done_mb / el, 1)
+                    if clen > 0:
+                        pct = min(98, max(5, int((len(buf) * 100) / clen)))
+                        tot_mb = round(clen / (1024.0 * 1024.0), 2)
+                        set_progress(True, pct, task_title, f"⚡ Скачано: {done_mb} / {tot_mb} МБ ({pct}%) • {spd} МБ/с", cancellable=cancellable)
+                    else:
+                        set_progress(True, 55, task_title, f"⚡ Скачано: {done_mb} МБ • {spd} МБ/с", cancellable=cancellable)
                 return bytes(buf)
+        except DownloadCancelledError:
+            raise
         except Exception as e:
             last_err = e
-            time.sleep(1.2)
-    raise RuntimeError(f"Не удалось скачать поток после 4 попыток: {last_err}")
+            time.sleep(0.8)
+    raise RuntimeError(f"Не удалось скачать файл после 4 попыток: {last_err}")
 
 
 def _describe_run_or_commit(sha: str = "", run_obj: dict = None) -> dict:
@@ -867,25 +975,29 @@ def _compact_unified_diff(old_str: str, new_str: str) -> list:
 
 
 def _download_zipball_safe_bytes(sha: str, token: str, repo: str, task_title: str) -> bytes:
-    """Надёжное скачивание zipball/{sha} с проверкой сигнатуры ZIP и авто-повтором."""
+    """Быстрое и надёжное скачивание zipball/{sha}: прямая CDN-ссылка -> 32 потока (если CDN отдаёт 206) или прямой 256КБ поток + проверка ZIP."""
     last_err = None
     for attempt in range(1, 4):
+        check_download_cancelled()
         try:
-            # Для zipball используем 1 поток при первой генерации на codeload.github.com, чтобы CDN не рвал архив
-            threads_cnt = 1 if attempt >= 1 else 8
+            threads_cnt = 32 if attempt == 1 else 8
             raw = gh_download_bytes(
                 f"zipball/{sha}",
                 token=token,
                 repo=repo,
                 task_title=f"{task_title}" + (f" (попытка {attempt})" if attempt > 1 else ""),
                 threads=threads_cnt,
+                cancellable=True,
             )
+            check_download_cancelled()
             if raw and len(raw) > 22 and raw[:4] == b"PK\x03\x04" and zipfile.is_zipfile(io.BytesIO(raw)):
                 return raw
-            last_err = f"Сервер вернул неполный буфер ({len(raw) if raw else 0} байт)"
+            last_err = f"Сервер вернул неполный ZIP буфер ({len(raw) if raw else 0} байт)"
+        except DownloadCancelledError:
+            raise
         except Exception as e:
             last_err = str(e)
-        time.sleep(0.8 * attempt)
+        time.sleep(0.6 * attempt)
     raise RuntimeError(f"Не удалось скачать корректный .zip с GitHub после 3 попыток: {last_err}")
 
 
@@ -896,12 +1008,14 @@ def download_build_source_zip_custom(
     token: str = "",
     repo: str = "",
 ) -> dict:
+    reset_download_cancel()
     cfg = load_config()
     tok = (token or cfg.get("token") or "").strip()
     rep = (repo or cfg.get("repo") or DEFAULT_REPO).strip()
     out_dir = (save_dir or cfg.get("save_dir") or DEFAULT_SAVE_DIR).strip()
     os.makedirs(out_dir, exist_ok=True)
 
+    set_progress(True, 3, "📦 Подготовка загрузки .zip", f"Поиск сборки #{target_id} на GitHub...", cancellable=True)
     runs_data = gh_api("actions/runs?per_page=60", "GET", token=tok, repo=rep)
     runs = runs_data.get("workflow_runs") or []
     if not runs:
@@ -935,84 +1049,98 @@ def download_build_source_zip_custom(
     bnum = run_obj.get("run_number") or sha[:7]
     title = run_obj.get("display_title") or ""
 
-    raw_zip = _download_zipball_safe_bytes(
-        sha=sha,
-        token=tok,
-        repo=rep,
-        task_title=f"Скачивание исходников #{bnum}" + (" (без .so)" if skip_so else " (полный)"),
-    )
-
     repo_short = rep.split("/")[-1] if "/" in rep else rep
     suffix = "src_no_so" if skip_so else "full_src"
     fname = f"{repo_short}_#{bnum}_{suffix}.zip"
     out_zip_path = os.path.join(out_dir, fname)
+    part_zip_path = out_zip_path + ".part"
+    register_temp_download_file(part_zip_path)
 
-    skipped_so = []
-    kept_native_sources = []
-    native_src_exts = {".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".go", ".rs", ".mk"}
+    try:
+        raw_zip = _download_zipball_safe_bytes(
+            sha=sha,
+            token=tok,
+            repo=rep,
+            task_title=f"📦 Исходники #{bnum}" + (" (без .so)" if skip_so else " (полный)"),
+        )
+        check_download_cancelled()
+        set_progress(True, 96, f"📦 Сборка архива #{bnum}", f"Формирование {fname}...", cancellable=True)
 
-    with zipfile.ZipFile(io.BytesIO(raw_zip), "r") as zin, zipfile.ZipFile(
-        out_zip_path, "w", zipfile.ZIP_DEFLATED
-    ) as zout:
-        for item in zin.infolist():
-            parts = item.filename.split("/", 1)
-            if len(parts) < 2 or not parts[1] or parts[1].endswith("/"):
-                continue
-            rel_path = parts[1]
-            ext = os.path.splitext(rel_path)[1].lower()
-            data_bytes = zin.read(item.filename)
+        skipped_so = []
+        kept_native_sources = []
+        native_src_exts = {".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".go", ".rs", ".mk"}
 
-            if ext in native_src_exts:
-                kept_native_sources.append(f"{rel_path} ({len(data_bytes)} B)")
+        with zipfile.ZipFile(io.BytesIO(raw_zip), "r") as zin, zipfile.ZipFile(
+            part_zip_path, "w", zipfile.ZIP_DEFLATED
+        ) as zout:
+            for item in zin.infolist():
+                check_download_cancelled()
+                parts = item.filename.split("/", 1)
+                if len(parts) < 2 or not parts[1] or parts[1].endswith("/"):
+                    continue
+                rel_path = parts[1]
+                ext = os.path.splitext(rel_path)[1].lower()
+                data_bytes = zin.read(item.filename)
+
+                if ext in native_src_exts:
+                    kept_native_sources.append(f"{rel_path} ({len(data_bytes)} B)")
+
+                if skip_so:
+                    if ext == ".pyc" or "/__pycache__/" in f"/{rel_path}":
+                        continue
+                    if ext == ".so":
+                        sha1_short = hashlib.sha1(data_bytes).hexdigest()[:10]
+                        kb_sz = round(len(data_bytes) / 1024.0, 1)
+                        syms = _extract_elf_so_symbols(data_bytes)
+                        sym_names = sorted(list(syms.keys()))
+                        skipped_so.append({
+                            "path": rel_path,
+                            "bytes": len(data_bytes),
+                            "kb": kb_sz,
+                            "sha1": sha1_short,
+                            "funcs": sym_names,
+                        })
+                        continue
+
+                zout.writestr(rel_path, data_bytes)
 
             if skip_so:
-                if ext == ".pyc" or "/__pycache__/" in f"/{rel_path}":
-                    continue
-                if ext == ".so":
-                    sha1_short = hashlib.sha1(data_bytes).hexdigest()[:10]
-                    kb_sz = round(len(data_bytes) / 1024.0, 1)
-                    syms = _extract_elf_so_symbols(data_bytes)
-                    sym_names = sorted(list(syms.keys()))
-                    skipped_so.append({
-                        "path": rel_path,
-                        "bytes": len(data_bytes),
-                        "kb": kb_sz,
-                        "sha1": sha1_short,
-                        "funcs": sym_names,
-                    })
-                    continue
+                pass_lines = [
+                    "==========================================================",
+                    f"📦 ПАСПОРТ НАТИВНЫХ БИБЛИОТЕК (.SO) — СБОРКА #{bnum} (ID: {sha[:7]})",
+                    f"Описание сборки: {title}",
+                    "==========================================================",
+                    "Бинарные .so файлы были пропущены галочкой для уменьшения веса архива,",
+                    "но ВСЕ исходники нативных библиотек (.go, .c, .cpp, .h, .hpp) сохранены в архиве!",
+                    "",
+                    f"✅ Сохраненные исходники .so библиотек ({len(kept_native_sources)}):",
+                ]
+                for ns in kept_native_sources:
+                    pass_lines.append(f"  • {ns}")
+                pass_lines.append("")
+                pass_lines.append(f"🚫 Пропущенные скомпилированные бинарники .so ({len(skipped_so)}):")
+                for s_info in skipped_so:
+                    pass_lines.append(
+                        f"  • {s_info['path']} — {s_info['kb']} КБ ({s_info['bytes']} B, sha1:{s_info['sha1']}), функций ELF: {len(s_info['funcs'])}"
+                    )
+                    if s_info["funcs"]:
+                        preview_fn = ", ".join(s_info["funcs"][:25])
+                        if len(s_info["funcs"]) > 25:
+                            preview_fn += f" ... (+{len(s_info['funcs']) - 25})"
+                        pass_lines.append(f"    Функции: {preview_fn}")
+                zout.writestr("SO_LIBRARIES_PASSPORT.txt", "\n".join(pass_lines).encode("utf-8"))
 
-            zout.writestr(rel_path, data_bytes)
-
-        if skip_so:
-            pass_lines = [
-                "==========================================================",
-                f"📦 ПАСПОРТ НАТИВНЫХ БИБЛИОТЕК (.SO) — СБОРКА #{bnum} (ID: {sha[:7]})",
-                f"Описание сборки: {title}",
-                "==========================================================",
-                "Бинарные .so файлы были пропущены галочкой для уменьшения веса архива,",
-                "но ВСЕ исходники нативных библиотек (.go, .c, .cpp, .h, .hpp) сохранены в архиве!",
-                "",
-                f"✅ Сохраненные исходники .so библиотек ({len(kept_native_sources)}):",
-            ]
-            for ns in kept_native_sources:
-                pass_lines.append(f"  • {ns}")
-            pass_lines.append("")
-            pass_lines.append(f"🚫 Пропущенные скомпилированные бинарники .so ({len(skipped_so)}):")
-            for s_info in skipped_so:
-                pass_lines.append(
-                    f"  • {s_info['path']} — {s_info['kb']} КБ ({s_info['bytes']} B, sha1:{s_info['sha1']}), функций ELF: {len(s_info['funcs'])}"
-                )
-                if s_info["funcs"]:
-                    preview_fn = ", ".join(s_info["funcs"][:25])
-                    if len(s_info["funcs"]) > 25:
-                        preview_fn += f" ... (+{len(s_info['funcs']) - 25})"
-                    pass_lines.append(f"    Функции: {preview_fn}")
-            zout.writestr("SO_LIBRARIES_PASSPORT.txt", "\n".join(pass_lines).encode("utf-8"))
+        check_download_cancelled()
+        os.replace(part_zip_path, out_zip_path)
+        unregister_temp_download_file(part_zip_path)
+    except Exception:
+        cleanup_cancelled_temp_files()
+        raise
 
     sz_bytes = os.path.getsize(out_zip_path)
     sz_mb = round(sz_bytes / (1024.0 * 1024.0), 2)
     sz_kb = round(sz_bytes / 1024.0, 1)
+    set_progress(False, 100, "Готово", f"Архив {fname} сохранён", cancellable=False)
     return {
         "status": "ok",
         "zip_path": out_zip_path,
@@ -1028,6 +1156,7 @@ def download_build_source_zip_custom(
         "skip_so": skip_so,
         "skipped_so_count": len(skipped_so),
         "native_src_count": len(kept_native_sources),
+        "human_label": f"Сборка #{bnum} (ID: {sha[:7]}) — «{title}»",
     }
 
 
@@ -1896,6 +2025,14 @@ class BuilderHandler(BaseHTTPRequestHandler):
             data = {}
 
         try:
+            if path == "/api/cancel_download":
+                removed = trigger_download_cancel()
+                return self._send_json({
+                    "status": "ok",
+                    "cancelled": True,
+                    "removed_files": removed,
+                })
+
             if path == "/api/config":
                 cfg = save_config(data)
                 return self._send_json({"status": "ok", "config": cfg})
@@ -2027,6 +2164,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 return self._send_json({"status": "ok", **res})
 
             if path == "/api/download_apk":
+                reset_download_cancel()
                 cfg = load_config()
                 run_id = data.get("run_id")
                 run_number = data.get("run_number") or run_id
@@ -2034,10 +2172,17 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 os.makedirs(save_dir, exist_ok=True)
                 save_config({"save_dir": save_dir})
 
-                set_progress(True, 2, f"📥 Скачивание APK #{run_number}", "Получение ссылки на артефакт сборки...")
+                repo_short = cfg["repo"].split("/")[-1]
+                out_apk_name = f"{repo_short}_#{run_number}.apk"
+                out_apk_path = os.path.join(save_dir, out_apk_name)
+                part_apk_path = out_apk_path + ".part"
+                register_temp_download_file(part_apk_path)
+
+                set_progress(True, 2, f"📥 Скачивание APK #{run_number}", "Получение ссылки на артефакт сборки...", cancellable=True)
                 arts = gh_api(f"actions/runs/{run_id}/artifacts", "GET")
                 art_list = arts.get("artifacts", [])
                 if not art_list:
+                    unregister_temp_download_file(part_apk_path)
                     set_progress(False, 0)
                     return self._send_json({"status": "error", "error": "Артефакт APK ещё не сформирован в этой сборке"})
                 art_id = art_list[0]["id"]
@@ -2045,23 +2190,26 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     f"actions/artifacts/{art_id}/zip",
                     task_title=f"📥 Скачивание APK #{run_number} (32 потока)",
                     threads=32,
+                    cancellable=True,
                 )
+                check_download_cancelled()
 
-                repo_short = cfg["repo"].split("/")[-1]
-                out_apk_name = f"{repo_short}_#{run_number}.apk"
-                out_apk_path = os.path.join(save_dir, out_apk_name)
-
-                set_progress(True, 98, f"📥 Распаковка APK #{run_number}", f"Сохранение в {out_apk_path}...")
+                set_progress(True, 98, f"📥 Распаковка APK #{run_number}", f"Сохранение в {out_apk_path}...", cancellable=True)
                 with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
                     apk_members = [m for m in zf.namelist() if m.lower().endswith(".apk")]
                     if not apk_members:
+                        cleanup_cancelled_temp_files()
                         set_progress(False, 0)
                         return self._send_json({"status": "error", "error": "Внутри артефакта не найден .apk файл"})
-                    with open(out_apk_path, "wb") as out_f:
+                    with open(part_apk_path, "wb") as out_f:
                         out_f.write(zf.read(apk_members[0]))
 
+                check_download_cancelled()
+                os.replace(part_apk_path, out_apk_path)
+                unregister_temp_download_file(part_apk_path)
+
                 sz_mb = round(os.path.getsize(out_apk_path) / (1024.0 * 1024.0), 2)
-                set_progress(False, 100, "Готово", f"APK #{run_number} сохранён")
+                set_progress(False, 100, "Готово", f"APK #{run_number} сохранён", cancellable=False)
                 return self._send_json({
                     "status": "ok",
                     "apk_path": out_apk_path,
@@ -2135,10 +2283,13 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     _, sha = _resolve_target_branch()
                     meta = _describe_run_or_commit(sha, None)
 
+                reset_download_cancel()
                 bnum = meta.get("build_number") or "latest"
-                raw_zip_bytes = gh_download_bytes(f"zipball/{sha}",
+                raw_zip_bytes = _download_zipball_safe_bytes(
+                    sha=sha,
+                    token=cfg.get("token") or "",
+                    repo=cfg.get("repo") or DEFAULT_REPO,
                     task_title=f"⬇️ Скачивание Сборки #{bnum} с GitHub",
-                    threads=1,
                 )
                 written = _unpack_zip_bytes_to_folder(raw_zip_bytes, folder_p)
                 set_progress(False, 100, "Готово", f"Записано {written} файлов")
@@ -2205,7 +2356,16 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 })
 
             self._send_json({"status": "error", "error": "Unknown endpoint"}, 404)
+        except DownloadCancelledError:
+            removed = cleanup_cancelled_temp_files()
+            set_progress(False, 0, "⏹ Отменено", "Недокачанные файлы удалены", cancellable=False)
+            self._send_json({
+                "status": "cancelled",
+                "error": "Загрузка отменена пользователем. Недокачанный файл удалён.",
+                "removed_files": removed,
+            })
         except Exception as e:
+            cleanup_cancelled_temp_files()
             set_progress(False, 0)
             self._send_json({"status": "error", "error": f"{e}"})
 
