@@ -180,7 +180,7 @@
     </div>
   </div>
   <div style="display:flex;gap:5px;flex-shrink:0;">
-    <button class="btn" style="width:auto;padding:4px 7px;font-size:10.5px;" onclick="refreshInstalledVersion()">🔄</button>
+    <button class="btn" style="width:auto;padding:4px 7px;font-size:10.5px;" onclick="refreshInstalledVersion(true)">🔄</button>
     <button class="btn btn-purple" style="width:auto;padding:4px 8px;font-size:10.5px;" onclick="window.scrollTo({top:0,behavior:'smooth'});setTimeout(()=>{const el=document.getElementById('settingsArea');if(el&&el.style.display==='none')toggleSettings();},220);">⚙️</button>
   </div>
 </div>
@@ -207,7 +207,7 @@
     В HyperOS / MIUI этот тумблер спрятан в «Специальном доступе». Нажми кнопку ниже — откроется прямое системное окно тумблера для Jenny Builder:
   </div>
   <button class="btn btn-red" onclick="requestAndroidStoragePerm()">
-    🔓 Выдать «Доступ ко всем файлам» (1 клик)
+    🔓 Выдать доступ ко всем файлам
   </button>
 </div>
 
@@ -239,7 +239,7 @@
   <div class="lp-box" id="installedStatusBox">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
       <b style="color:#7ee787;font-size:12px;">📲 ЧТО СЕЙЧАС УСТАНОВЛЕНО НА ТЕЛЕФОНЕ:</b>
-      <button class="btn" style="width:auto;padding:3px 8px;font-size:10px;" onclick="refreshInstalledVersion()">🔄 Проверить</button>
+      <button class="btn" style="width:auto;padding:3px 8px;font-size:10px;" onclick="refreshInstalledVersion(true)">🔄 Проверить</button>
     </div>
     <div style="font-size:11.5px;line-height:1.45;">
       <div>🎵 <b>Jenny Player:</b> <span id="instPlayerMain" style="color:#fff;font-weight:bold;">проверка...</span></div>
@@ -378,7 +378,7 @@
 <div class="card">
   <div class="card-title">
     <span>⚡ 3. СБОРКИ GITHUB ACTIONS (СКАЧАТЬ В 32 ПОТОКА И УСТАНОВИТЬ)</span>
-    <button class="btn" style="width:auto;padding:4px 8px;font-size:11px;" onclick="loadRuns()">🔄 Обновить</button>
+    <button class="btn" style="width:auto;padding:4px 8px;font-size:11px;" onclick="loadRuns(true)">🔄 Обновить</button>
   </div>
 
   <div id="activeStepsContainer" style="margin-bottom:8px;"></div>
@@ -387,7 +387,7 @@
   <div id="errorLogPanel" class="err-box">
     <div style="font-weight:bold;color:#ff7b72;font-size:12px;" id="errorStepTitle">❌ Ошибка на этапе сборки</div>
     <button class="btn btn-red" style="margin-top:6px;" id="btnCopyErrLog" onclick="copyFailedStepLog()">
-      📋 Скопировать весь текст этапа с ошибкой (1 клик)
+      📋 Скопировать лог ошибки
     </button>
     <pre id="errorLogPre" class="err-pre"></pre>
   </div>
@@ -1003,7 +1003,10 @@ function renderInstalledStatus(inst) {
   } catch (e) {}
 }
 
-async function refreshInstalledVersion() {
+async function refreshInstalledVersion(isManual) {
+  if (isManual) {
+    showStatus('🔄 Проверяю установленные версии и обновляю список сборок с GitHub...', false);
+  }
   try {
     const hints = collectBridgeAppHints();
     const r = await fetch('/api/installed_info', {
@@ -1014,9 +1017,15 @@ async function refreshInstalledVersion() {
     const d = await r.json();
     if (d.status === 'ok' && d.installed) {
       renderInstalledStatus(d.installed);
-      loadRuns();
+      await loadRuns(Boolean(isManual));
+    } else if (isManual) {
+      showStatus('⚠️ Не удалось обновить статус установленных версий.', true);
     }
-  } catch (e) {}
+  } catch (e) {
+    if (isManual) {
+      showStatus('⚠️ Ошибка обновления статуса версий: нет ответа от локального сервера.', true);
+    }
+  }
 }
 
 function updateButtonLabels() {
@@ -1182,10 +1191,12 @@ function copyDiffReport() {
   } else {
     fallbackCopy();
   }
-  btn.textContent = '✅ ОТЧЁТ СКОПИРОВАН В БУФЕР ОБМЕНА!';
+  const linesCnt = txt.split('\n').length;
+  showStatus('📋 Отчёт сравнения скопирован в буфер обмена (' + linesCnt + ' строк).', false);
+  btn.textContent = '✅ Скопировано';
   setTimeout(() => {
     btn.textContent = '📋 Скопировать весь отчёт (для чата)';
-  }, 2500);
+  }, 2200);
 }
 
 function applyShortDiffToCommitMsg() {
@@ -1710,98 +1721,156 @@ async function downloadRunApk(runId, runNum, autoInstallAfter) {
   }
 }
 
-async function loadRuns() {
+let wasOfflineRuns = false;
+
+function renderRunsPayloadToDom(d) {
+  if (!d) return;
+  if (d.latest_good) {
+    latestGoodBuildInfo = d.latest_good;
+  }
+  const runs = d.runs || [];
+  if (runs.length > 0) {
+    allLoadedRuns = runs;
+  }
+  if (d.installed) {
+    renderInstalledStatus(d.installed);
+  }
+  updateButtonLabels();
+
+  const instPlayerBuild = (currentInstalledState && currentInstalledState.player) ? currentInstalledState.player.build_number : null;
+  const listEl = document.getElementById('runsListContainer');
+  let html = '';
+  for (let i = 0; i < allLoadedRuns.length; i++) {
+    const item = allLoadedRuns[i];
+    let icon = '⏳';
+    let color = '#e3b341';
+    if (item.status === 'completed') {
+      if (item.conclusion === 'success') { icon = '✅'; color = '#3fb950'; }
+      else { icon = '❌'; color = '#ff7b72'; }
+    }
+    const isSel = (d.active && d.active.run_id === item.id) || (String(selectedRunId) === String(item.id));
+    const isInstalledNow = (instPlayerBuild && item.run_number === instPlayerBuild);
+    const borderCol = isInstalledNow ? '#3fb950' : (isSel ? '#a371f7' : '#21262d');
+    const instBadgeHtml = isInstalledNow ? '<span class="inst-badge">📲 УСТАНОВЛЕНА СЕЙЧАС</span>' : '';
+    html += '<div class="run-item" style="border-color:' + borderCol + ';" onclick="selectRun(' + item.id + ')">';
+    html += '  <div style="flex:1;min-width:0;">';
+    html += '    <div style="font-weight:bold;color:' + color + ';font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + icon + ' Сборка #' + item.run_number + instBadgeHtml + ' — ' + item.title + '</div>';
+    html += '    <div style="font-size:10px;color:#8b949e;">Дата: ' + item.created_at + ' • ID коммита: ' + item.head_sha + '</div>';
+    html += '  </div>';
+    if (item.conclusion === 'success') {
+      html += '  <div style="display:flex;gap:4px;flex-shrink:0;">';
+      html += '    <button class="btn btn-purple" style="width:auto;padding:6px 7px;font-size:10.5px;" onclick="event.stopPropagation();downloadBuildSourceZip(' + item.run_number + ', this)">📦 .zip</button>';
+      html += '    <button class="btn btn-blue" style="width:auto;padding:6px 8px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', false)">📥 APK</button>';
+      html += '    <button class="btn btn-green" style="width:auto;padding:6px 8px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', true)">📲 Установить</button>';
+      html += '  </div>';
+    } else if (item.conclusion === 'failure') {
+      html += '  <div style="display:flex;gap:4px;flex-shrink:0;">';
+      html += '    <button class="btn btn-purple" style="width:auto;padding:6px 7px;font-size:10.5px;" onclick="event.stopPropagation();downloadBuildSourceZip(' + item.run_number + ', this)">📦 .zip</button>';
+      html += '    <button class="btn btn-red" style="width:auto;padding:6px 9px;font-size:10.5px;white-space:nowrap;" onclick="event.stopPropagation();selectRun(' + item.id + ')">🔍 Ошибка #' + item.run_number + '</button>';
+      html += '  </div>';
+    }
+    html += '</div>';
+  }
+  if (listEl && (html || allLoadedRuns.length === 0)) {
+    listEl.innerHTML = html || 'Нет сборок';
+  }
+
+  const stBox = document.getElementById('activeStepsContainer');
+  const errPanel = document.getElementById('errorLogPanel');
+  if (d.active && d.active.steps && d.active.steps.length > 0) {
+    const actHdr = formatBuildBadge(d.active.run_number, d.active.version_tag, d.active.title);
+    let sHtml = '<div style="font-size:11px;color:#d2a8ff;margin-bottom:5px;font-weight:bold;">Этапы: ' + actHdr + '</div>';
+    for (let j = 0; j < d.active.steps.length; j++) {
+      const st = d.active.steps[j];
+      let badge = '⏳';
+      let stCol = '#8b949e';
+      if (st.status === 'in_progress') { badge = '🔨 Идёт...'; stCol = '#e3b341'; }
+      else if (st.conclusion === 'success') { badge = '✅ OK'; stCol = '#3fb950'; }
+      else if (st.conclusion === 'failure') { badge = '❌ ОШИБКА'; stCol = '#ff7b72'; }
+      else if (st.conclusion === 'skipped') { badge = '⏭️ Пропущен'; stCol = '#484f58'; }
+      sHtml += '<div class="step-row"><span>' + st.number + '. ' + st.name + '</span><b style="color:' + stCol + ';">' + badge + '</b></div>';
+    }
+    stBox.innerHTML = sHtml;
+
+    if (d.active.failed_job_id) {
+      errPanel.style.display = 'block';
+      document.getElementById('errorStepTitle').textContent = '❌ Ошибка в Сборке #' + (d.active.run_number || '') + ' на этапе: ' + d.active.failed_step_name;
+      if (lastFailedJobId !== d.active.failed_job_id) {
+        lastFailedJobId = d.active.failed_job_id;
+        fetchFailedStepLog(d.active.failed_job_id, d.active.failed_step_name, d.active.failed_started_at, d.active.failed_completed_at, d.active.run_number);
+      }
+    } else {
+      errPanel.style.display = 'none';
+    }
+  }
+}
+
+// Подгружаем кэш сборок сразу при старте, чтобы список никогда не пропадал без сети
+try {
+  const cachedRaw = localStorage.getItem('jb_runs_cache_v18');
+  if (cachedRaw) {
+    const cachedObj = JSON.parse(cachedRaw);
+    if (cachedObj && cachedObj.runs && cachedObj.runs.length > 0) {
+      setTimeout(() => {
+        if (allLoadedRuns.length === 0) renderRunsPayloadToDom(cachedObj);
+      }, 50);
+    }
+  }
+} catch (e) {}
+
+async function loadRuns(isManual, fromSelectRun) {
+  if (isManual && !fromSelectRun) {
+    showStatus('🔄 Обновляю список сборок и этапы с GitHub...', false);
+  }
   try {
     const q = selectedRunId ? ('?run_id=' + encodeURIComponent(selectedRunId)) : '';
     const r = await fetch('/api/runs' + q);
     const d = await r.json();
     if (d.status !== 'ok') {
-      if (d.error) {
-        document.getElementById('runsListContainer').innerHTML = '<div style="color:#ffa198;font-size:11px;">❌ ' + d.error + '</div>';
+      // Если интернет пропал — НЕ стираем список сборок, оставляем кэшированный список!
+      if (allLoadedRuns.length === 0) {
+        try {
+          const cachedRaw = localStorage.getItem('jb_runs_cache_v18');
+          if (cachedRaw) renderRunsPayloadToDom(JSON.parse(cachedRaw));
+        } catch (e2) {}
+      }
+      if (!wasOfflineRuns || isManual || fromSelectRun) {
+        wasOfflineRuns = true;
+        showStatus('⚠️ Нет подключения к GitHub — показан сохранённый список сборок.', true);
       }
       return;
     }
 
-    if (d.latest_good) {
-      latestGoodBuildInfo = d.latest_good;
-    }
-    const runs = d.runs || [];
-    allLoadedRuns = runs;
-
-    if (d.installed) {
-      renderInstalledStatus(d.installed);
-    }
-    updateButtonLabels();
-
-    const instPlayerBuild = (currentInstalledState && currentInstalledState.player) ? currentInstalledState.player.build_number : null;
-
-    const listEl = document.getElementById('runsListContainer');
-    let html = '';
-    for (let i = 0; i < runs.length; i++) {
-      const item = runs[i];
-      let icon = '⏳';
-      let color = '#e3b341';
-      if (item.status === 'completed') {
-        if (item.conclusion === 'success') { icon = '✅'; color = '#3fb950'; }
-        else { icon = '❌'; color = '#ff7b72'; }
+    if (wasOfflineRuns) {
+      wasOfflineRuns = false;
+      if (!isManual && !fromSelectRun) {
+        showStatus('🟢 Связь с GitHub восстановлена. Список сборок актуальный.', false);
       }
-      const isSel = (d.active && d.active.run_id === item.id);
-      const isInstalledNow = (instPlayerBuild && item.run_number === instPlayerBuild);
-      const borderCol = isInstalledNow ? '#3fb950' : (isSel ? '#a371f7' : '#21262d');
-      const instBadgeHtml = isInstalledNow ? '<span class="inst-badge">📲 УСТАНОВЛЕНА СЕЙЧАС</span>' : '';
-      html += '<div class="run-item" style="border-color:' + borderCol + ';" onclick="selectRun(' + item.id + ')">';
-      html += '  <div style="flex:1;min-width:0;">';
-      html += '    <div style="font-weight:bold;color:' + color + ';font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + icon + ' Сборка #' + item.run_number + instBadgeHtml + ' — ' + item.title + '</div>';
-      html += '    <div style="font-size:10px;color:#8b949e;">Дата: ' + item.created_at + ' • ID коммита: ' + item.head_sha + '</div>';
-      html += '  </div>';
-      if (item.conclusion === 'success') {
-        html += '  <div style="display:flex;gap:4px;flex-shrink:0;">';
-        html += '    <button class="btn btn-purple" style="width:auto;padding:6px 7px;font-size:10.5px;" onclick="event.stopPropagation();downloadBuildSourceZip(' + item.run_number + ', this)">📦 .zip</button>';
-        html += '    <button class="btn btn-blue" style="width:auto;padding:6px 8px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', false)">📥 APK</button>';
-        html += '    <button class="btn btn-green" style="width:auto;padding:6px 8px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', true)">📲 Установить</button>';
-        html += '  </div>';
-      } else if (item.conclusion === 'failure') {
-        html += '  <div style="display:flex;gap:4px;flex-shrink:0;">';
-        html += '    <button class="btn btn-purple" style="width:auto;padding:6px 7px;font-size:10.5px;" onclick="event.stopPropagation();downloadBuildSourceZip(' + item.run_number + ', this)">📦 .zip</button>';
-        html += '    <button class="btn btn-red" style="width:auto;padding:6px 9px;font-size:10.5px;white-space:nowrap;" onclick="event.stopPropagation();selectRun(' + item.id + ')">🔍 Ошибка #' + item.run_number + '</button>';
-        html += '  </div>';
-      }
-      html += '</div>';
     }
-    listEl.innerHTML = html || 'Нет сборок';
 
-    const stBox = document.getElementById('activeStepsContainer');
-    const errPanel = document.getElementById('errorLogPanel');
-    if (d.active && d.active.steps && d.active.steps.length > 0) {
-      const actHdr = formatBuildBadge(d.active.run_number, d.active.version_tag, d.active.title);
-      let sHtml = '<div style="font-size:11px;color:#d2a8ff;margin-bottom:5px;font-weight:bold;">Этапы: ' + actHdr + '</div>';
-      for (let j = 0; j < d.active.steps.length; j++) {
-        const st = d.active.steps[j];
-        let badge = '⏳';
-        let stCol = '#8b949e';
-        if (st.status === 'in_progress') { badge = '🔨 Идёт...'; stCol = '#e3b341'; }
-        else if (st.conclusion === 'success') { badge = '✅ OK'; stCol = '#3fb950'; }
-        else if (st.conclusion === 'failure') { badge = '❌ ОШИБКА'; stCol = '#ff7b72'; }
-        else if (st.conclusion === 'skipped') { badge = '⏭️ Пропущен'; stCol = '#484f58'; }
-        sHtml += '<div class="step-row"><span>' + st.number + '. ' + st.name + '</span><b style="color:' + stCol + ';">' + badge + '</b></div>';
-      }
-      stBox.innerHTML = sHtml;
+    try {
+      localStorage.setItem('jb_runs_cache_v18', JSON.stringify(d));
+    } catch (e) {}
 
-      if (d.active.failed_job_id) {
-        errPanel.style.display = 'block';
-        document.getElementById('errorStepTitle').textContent = '❌ Ошибка в Сборке #' + (d.active.run_number || '') + ' на этапе: ' + d.active.failed_step_name;
-        if (lastFailedJobId !== d.active.failed_job_id) {
-          lastFailedJobId = d.active.failed_job_id;
-          fetchFailedStepLog(d.active.failed_job_id, d.active.failed_step_name, d.active.failed_started_at, d.active.failed_completed_at);
-        }
-      } else {
-        errPanel.style.display = 'none';
+    renderRunsPayloadToDom(d);
+
+    if (fromSelectRun && d.active) {
+      if (!d.active.failed_job_id) {
+        showStatus('✅ Загружены этапы Сборки #' + (d.active.run_number || '') + ' (' + (d.active.steps ? d.active.steps.length : 0) + ' шагов).', false);
       }
-    } else {
-      stBox.innerHTML = '';
-      errPanel.style.display = 'none';
+    } else if (isManual) {
+      const topNum = (d.runs && d.runs.length > 0) ? ('#' + d.runs[0].run_number) : 'нет';
+      const instNum = (d.installed && d.installed.player && d.installed.player.build_number)
+        ? ('#' + d.installed.player.build_number)
+        : 'не установлена';
+      showStatus('✅ Данные обновлены: на телефоне Сборка ' + instNum + ', свежая на GitHub ' + topNum + ' (всего в списке: ' + (d.runs ? d.runs.length : 0) + ').', false);
     }
-  } catch (e) {}
+  } catch (e) {
+    if (!wasOfflineRuns || isManual || fromSelectRun) {
+      wasOfflineRuns = true;
+      showStatus('⚠️ Нет связи с сетью — показан сохранённый список сборок.', true);
+    }
+  }
 }
 
 function selectRun(runId) {
@@ -1813,12 +1882,14 @@ function selectRun(runId) {
   } else {
     showStatus('🔎 Загружаю этапы сборки ID ' + runId + '...', false);
   }
-  loadRuns();
+  loadRuns(false, true);
 }
 
-async function fetchFailedStepLog(jobId, stepName, startedAt, completedAt) {
+async function fetchFailedStepLog(jobId, stepName, startedAt, completedAt, runNum) {
   const pre = document.getElementById('errorLogPre');
   pre.textContent = '⏳ Загружаю полный текст упавшего этапа...';
+  const bLbl = runNum ? ('Сборки #' + runNum) : '';
+  showStatus('⏳ Загружаю лог ошибки ' + bLbl + ' (этап: «' + (stepName || '') + '»)...', false);
   try {
     const url = '/api/job_error_log?job_id=' + encodeURIComponent(jobId) +
                 '&step_name=' + encodeURIComponent(stepName || '') +
@@ -1830,11 +1901,14 @@ async function fetchFailedStepLog(jobId, stepName, startedAt, completedAt) {
       lastFetchedErrorLog = d.error_log || '';
       pre.textContent = lastFetchedErrorLog;
       pre.scrollTop = pre.scrollHeight;
+      showStatus('✅ Лог ошибки ' + bLbl + ' загружен (этап: «' + (stepName || '') + '»).', false);
     } else {
       pre.textContent = 'Ошибка получения лога: ' + d.error;
+      showStatus('⚠️ Не удалось загрузить лог ошибки: ' + d.error, true);
     }
   } catch (e) {
     pre.textContent = 'Ошибка сети при загрузке лога: ' + e;
+    showStatus('⚠️ Нет подключения к сети для загрузки лога ошибки.', true);
   }
 }
 
@@ -1858,10 +1932,12 @@ function copyFailedStepLog() {
   } else {
     fallbackCopy();
   }
-  btn.textContent = '✅ СКОПИРОВАНО В БУФЕР ОБМЕНА!';
+  const linesCnt = txt.split('\n').length;
+  showStatus('📋 Лог ошибки скопирован в буфер обмена (' + linesCnt + ' строк).', false);
+  btn.textContent = '✅ Лог скопирован';
   setTimeout(() => {
-    btn.textContent = '📋 Скопировать весь текст этапа с ошибкой (1 клик)';
-  }, 2500);
+    btn.textContent = '📋 Скопировать лог ошибки';
+  }, 2200);
 }
 
 let lastBrowserData = null;
