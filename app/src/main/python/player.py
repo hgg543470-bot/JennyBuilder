@@ -17,6 +17,7 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import threading as _threading_boot
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8795
@@ -31,6 +32,41 @@ EXCLUDE_FILES = {"omni_full_trace.log", "omni_simple.log", "shizuku_window_dump.
 
 _MEM_CFG = {}
 _CACHED_RUNS_LIST = []
+_PROGRESS_LOCK = _threading_boot.Lock()
+_TASK_PROGRESS = {
+    "active": False,
+    "percent": 0,
+    "title": "",
+    "detail": "",
+    "started_at": 0.0,
+}
+
+
+def set_progress(active: bool, percent: int = 0, title: str = "", detail: str = ""):
+    global _TASK_PROGRESS
+    with _PROGRESS_LOCK:
+        now = time.time()
+        started = _TASK_PROGRESS.get("started_at", 0.0)
+        if active and not _TASK_PROGRESS.get("active"):
+            started = now
+        elif not active:
+            started = 0.0
+        _TASK_PROGRESS = {
+            "active": bool(active),
+            "percent": max(0, min(100, int(percent))),
+            "title": str(title or ""),
+            "detail": str(detail or ""),
+            "started_at": started,
+            "elapsed_sec": round(now - started, 1) if (active and started > 0) else 0.0,
+        }
+
+
+def get_progress() -> dict:
+    with _PROGRESS_LOCK:
+        d = dict(_TASK_PROGRESS)
+        if d.get("active") and d.get("started_at", 0) > 0:
+            d["elapsed_sec"] = round(time.time() - d["started_at"], 1)
+        return d
 
 
 def _is_ignored_rel_path(rel_path: str) -> bool:
@@ -81,6 +117,11 @@ class _NoAuthRedirectHandler(urllib.request.HTTPRedirectHandler):
                     if k.lower() == "authorization":
                         del new_req.unredirected_hdrs[k]
         return new_req
+
+
+class _StopRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def _parse_token_from_text(raw: str) -> str:
@@ -194,7 +235,6 @@ def load_config() -> dict:
         "save_dir": DEFAULT_SAVE_DIR,
         "source_dir": DEFAULT_PROJECT_DIR,
         "browse_dir": DEFAULT_SAVE_DIR,
-        "manual_installed_build": None,
     }
     if _MEM_CFG:
         cfg.update(_MEM_CFG)
@@ -251,7 +291,7 @@ def _extract_version_tag(title: str) -> str:
 
 
 # ==============================================================================
-# ТОЧНОЕ ОПРЕДЕЛЕНИЕ УСТАНОВЛЕННОЙ СБОРКИ ЧЕРЕЗ ПАСПОРТ APK (БЕЗ УГАДЫВАНИЯ)
+# ТОЧНОЕ ОПРЕДЕЛЕНИЕ УСТАНОВЛЕННОЙ СБОРКИ ЧЕРЕЗ ПАСПОРТ APK
 # ==============================================================================
 
 def _query_android_package_native(pkg_name: str) -> dict:
@@ -287,17 +327,7 @@ def _query_android_package_native(pkg_name: str) -> dict:
 
 
 def resolve_installed_apps_status(bridge_hints: dict = None, runs_list: list = None) -> dict:
-    """
-    Определяет установленную сборку строго по:
-    1. Штампу GitHub Actions в versionName ("#252 (v166...)") или versionCode == run_number.
-    2. Если установлен старый APK (versionCode == 1 без штампа # в versionName) — берёт номер сборки,
-       который был скачан/выбран пользователем (или последнюю сборку #251, если она только что скачана).
-    Никакого сканирования случайных файлов в Download!
-    """
-    cfg = load_config()
     runs = runs_list if runs_list is not None else _CACHED_RUNS_LIST
-    manual_bnum = cfg.get("manual_installed_build")
-
     out = {}
     for key, pkg in (("player", "com.jenny.player"), ("builder", "com.jenny.builder")):
         raw = None
@@ -321,51 +351,35 @@ def resolve_installed_apps_status(bridge_hints: dict = None, runs_list: list = N
                 pass
 
         build_num = None
-        vtag = ""
         commit_title = ""
         commit_sha = ""
-        is_exact_stamp = False
+        full_sha = ""
 
-        # 1. Точный штамп в versionName: "#251 (...)"
         m_stamp = re.search(r"#(\d+)\s*(?:\((.*)\))?", ver_name)
         if m_stamp:
             build_num = int(m_stamp.group(1))
             commit_title = (m_stamp.group(2) or "").strip()
-            vtag = _extract_version_tag(commit_title) or _extract_version_tag(ver_name)
-            is_exact_stamp = True
         elif v_code > 10 and key == "player":
-            # Точный штамп в versionCode == GITHUB_RUN_NUMBER
             build_num = v_code
-            is_exact_stamp = True
 
-        # 2. Если это старый APK плеера без штампа (versionCode <= 10), используем выбранный/скачанный пользователем номер сборки
-        if key == "player" and not build_num and manual_bnum:
-            try:
-                build_num = int(manual_bnum)
-            except Exception:
-                pass
-
-        # 3. Обогащаем полными данными из истории GitHub Actions по номеру сборки
         if key == "player" and runs and build_num:
             for r in runs:
                 if r.get("run_number") == build_num:
                     commit_title = r.get("title") or commit_title
-                    vtag = r.get("version_tag") or vtag
                     commit_sha = r.get("head_sha") or ""
+                    full_sha = r.get("full_sha") or ""
                     break
 
         if key == "player":
             if build_num:
                 parts = [f"Сборка #{build_num}"]
-                if vtag:
-                    parts.append(vtag)
                 if commit_sha:
                     parts.append(f"ID: {commit_sha}")
                 summary = " / ".join(parts)
                 if commit_title:
                     summary += f" — «{commit_title}»"
             else:
-                summary = f"APK без штампа номера (versionName: {ver_name}) — выбери установленную сборку ниже"
+                summary = f"Версия {ver_name} (код: {v_code})"
         else:
             summary = f"Версия {ver_name}" if ver_name else "Установлен"
 
@@ -376,10 +390,9 @@ def resolve_installed_apps_status(bridge_hints: dict = None, runs_list: list = N
             "versionCode": v_code,
             "updated_at": upd_str,
             "build_number": build_num,
-            "version_tag": vtag,
             "commit_sha": commit_sha,
+            "full_sha": full_sha,
             "title": commit_title,
-            "is_exact_stamp": is_exact_stamp,
             "human_summary": summary,
         }
 
@@ -393,7 +406,7 @@ def gh_api(endpoint: str, method: str = "GET", payload: dict = None, token: str 
     url = endpoint if endpoint.startswith("http") else f"https://api.github.com/repos/{rep}/{endpoint.lstrip('/')}"
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "JennyBuilder-Android/1.6",
+        "User-Agent": "JennyBuilder-Android/1.7",
     }
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
@@ -422,33 +435,148 @@ def gh_api(endpoint: str, method: str = "GET", payload: dict = None, token: str 
         raise RuntimeError(f"GitHub API HTTP {he.code}: {he.reason} {err_body}".strip())
 
 
-def gh_download_bytes(endpoint: str, token: str = "", repo: str = "") -> bytes:
+# ==============================================================================
+# СКАЧИВАНИЕ В 32 ПОТОКА С ПРОГРЕСС-БАРОМ В РЕАЛЬНОМ ВРЕМЕНИ
+# ==============================================================================
+
+def gh_download_bytes(endpoint: str, token: str = "", repo: str = "", task_title: str = "Скачивание с GitHub", threads: int = 32) -> bytes:
     cfg = load_config()
     tok = (token or cfg.get("token") or "").strip()
     rep = (repo or cfg.get("repo") or DEFAULT_REPO).strip()
     url = endpoint if endpoint.startswith("http") else f"https://api.github.com/repos/{rep}/{endpoint.lstrip('/')}"
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "JennyBuilder-Android/1.6",
+        "User-Agent": "JennyBuilder-Android/1.7",
     }
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
+
+    set_progress(True, 2, task_title, "Запрос прямой CDN-ссылки у GitHub...")
+
+    # Шаг 1: проверяем редирект на CDN/Azure Blob (для артефактов и zipball)
+    direct_url = url
+    need_auth_on_direct = True
+    try:
+        no_redir_opener = urllib.request.build_opener(_StopRedirectHandler())
+        req_init = urllib.request.Request(url, headers=headers, method="GET")
+        no_redir_opener.open(req_init, timeout=30)
+    except urllib.error.HTTPError as he:
+        if he.code in (301, 302, 303, 307, 308):
+            loc = he.headers.get("Location")
+            if loc:
+                direct_url = loc
+                new_host = (urllib.parse.urlparse(loc).hostname or "").lower()
+                is_signed = ("sig=" in loc) or ("X-Amz-" in loc) or ("se=" in loc)
+                is_gh = new_host == "github.com" or new_host.endswith(".github.com")
+                if not is_gh or is_signed:
+                    need_auth_on_direct = False
+    except Exception:
+        pass
+
+    dl_headers = {"User-Agent": "JennyBuilder-Android/1.7"}
+    if need_auth_on_direct and tok:
+        dl_headers["Authorization"] = f"Bearer {tok}"
+
+    # Шаг 2: Пробуем определить размер и поддержку Range для 32-поточного скачивания
+    total_size = 0
+    supports_range = False
+    try:
+        probe_hdrs = dict(dl_headers)
+        probe_hdrs["Range"] = "bytes=0-0"
+        req_probe = urllib.request.Request(direct_url, headers=probe_hdrs, method="GET")
+        opener = urllib.request.build_opener(_NoAuthRedirectHandler())
+        with opener.open(req_probe, timeout=25) as resp:
+            code = getattr(resp, "status", None) or resp.getcode()
+            cr = resp.headers.get("Content-Range") or ""
+            if code == 206 and "/" in cr:
+                total_size = int(cr.split("/")[-1].strip())
+                supports_range = True
+            elif resp.headers.get("Content-Length"):
+                total_size = int(resp.headers.get("Content-Length"))
+    except Exception:
+        pass
+
+    # Шаг 3: Если файл > 300 КБ и сервер отдаёт Range (206) — качаем в 32 параллельных потока!
+    if supports_range and total_size > 300 * 1024 and threads > 1:
+        total_mb = round(total_size / (1024.0 * 1024.0), 2)
+        set_progress(True, 5, task_title, f"Старт загрузки в {threads} потоков ({total_mb} МБ)...")
+        t0 = time.time()
+        part_size = (total_size + threads - 1) // threads
+        chunks = [None] * threads
+        downloaded_bytes = [0] * threads
+        prog_lock = _threading_boot.Lock()
+
+        def _update_multi_prog():
+            with prog_lock:
+                done_b = sum(downloaded_bytes)
+            pct = min(98, max(5, int((done_b * 100) / max(1, total_size))))
+            done_mb = round(done_b / (1024.0 * 1024.0), 2)
+            el = max(0.1, time.time() - t0)
+            spd = round(done_mb / el, 1)
+            set_progress(True, pct, task_title, f"⚡ {threads} потоков: {done_mb} / {total_mb} МБ ({pct}%) • {spd} МБ/с")
+
+        def fetch_part(idx: int):
+            start_b = idx * part_size
+            end_b = min(total_size - 1, start_b + part_size - 1)
+            if start_b >= total_size:
+                chunks[idx] = b""
+                return
+            for attempt in range(4):
+                try:
+                    p_hdrs = dict(dl_headers)
+                    p_hdrs["Range"] = f"bytes={start_b}-{end_b}"
+                    rq = urllib.request.Request(direct_url, headers=p_hdrs, method="GET")
+                    op = urllib.request.build_opener(_NoAuthRedirectHandler())
+                    with op.open(rq, timeout=90) as r:
+                        buf = bytearray()
+                        while True:
+                            blk = r.read(65536)
+                            if not blk:
+                                break
+                            buf.extend(blk)
+                            downloaded_bytes[idx] = len(buf)
+                            _update_multi_prog()
+                        chunks[idx] = bytes(buf)
+                        return
+                except Exception:
+                    downloaded_bytes[idx] = 0
+                    time.sleep(0.6)
+            raise RuntimeError(f"Не удалось скачать сегмент #{idx} после 4 попыток")
+
+        with ThreadPoolExecutor(max_workers=threads) as ex:
+            list(ex.map(fetch_part, range(threads)))
+
+        set_progress(True, 99, task_title, f"Склейка и распаковка ({total_mb} МБ)...")
+        return b"".join(chunks)
+
+    # Шаг 4: Фолбэк — потоковое скачивание с обновлением прогресс-бара по чанкам
     last_err = None
     for attempt in range(4):
         try:
             req = urllib.request.Request(url, headers=headers, method="GET")
             opener = urllib.request.build_opener(_NoAuthRedirectHandler())
+            t0 = time.time()
             with opener.open(req, timeout=180) as resp:
+                clen = int(resp.headers.get("Content-Length") or total_size or 0)
                 buf = bytearray()
                 while True:
                     chunk = resp.read(65536)
                     if not chunk:
                         break
                     buf.extend(chunk)
+                    done_mb = round(len(buf) / (1024.0 * 1024.0), 2)
+                    el = max(0.1, time.time() - t0)
+                    spd = round(done_mb / el, 1)
+                    if clen > 0:
+                        pct = min(98, max(5, int((len(buf) * 100) / clen)))
+                        tot_mb = round(clen / (1024.0 * 1024.0), 2)
+                        set_progress(True, pct, task_title, f"Скачано: {done_mb} / {tot_mb} МБ ({pct}%) • {spd} МБ/с")
+                    else:
+                        set_progress(True, 50, task_title, f"Скачано: {done_mb} МБ • {spd} МБ/с")
                 return bytes(buf)
         except Exception as e:
             last_err = e
-            time.sleep(1.5)
+            time.sleep(1.2)
     raise RuntimeError(f"Не удалось скачать поток после 4 попыток: {last_err}")
 
 
@@ -456,18 +584,14 @@ def _describe_run_or_commit(sha: str = "", run_obj: dict = None) -> dict:
     if run_obj:
         bnum = run_obj.get("run_number") or ""
         title = (run_obj.get("display_title") or run_obj.get("name") or "").strip()
-        vtag = _extract_version_tag(title)
         r_sha = (run_obj.get("head_sha") or sha or "")[:7]
         human = f"Сборка #{bnum}" if bnum else "Сборка"
-        if vtag:
-            human += f" / {vtag}"
         if r_sha:
             human += f" (ID: {r_sha})"
         if title:
             human += f" — «{title}»"
         return {
             "build_number": bnum,
-            "version_tag": vtag,
             "title": title,
             "human_label": human,
             "sha": r_sha,
@@ -479,15 +603,14 @@ def _describe_run_or_commit(sha: str = "", run_obj: dict = None) -> dict:
         if sha and (r_sha.startswith(sha) or sha.startswith(r_sha)):
             return {
                 "build_number": r.get("run_number"),
-                "version_tag": r.get("version_tag"),
                 "title": r.get("title"),
-                "human_label": f"Сборка #{r.get('run_number')} / {r.get('version_tag') or ''} (ID: {r.get('head_sha')}) — «{r.get('title')}»",
+                "human_label": f"Сборка #{r.get('run_number')} (ID: {r.get('head_sha')}) — «{r.get('title')}»",
                 "sha": (r.get("head_sha") or "")[:7],
                 "full_sha": r.get("full_sha") or "",
             }
 
     try:
-        runs_data = gh_api("actions/runs?per_page=30", "GET")
+        runs_data = gh_api("actions/runs?per_page=35", "GET")
         for r in runs_data.get("workflow_runs", []):
             r_sha = r.get("head_sha") or ""
             if sha and (r_sha.startswith(sha) or sha.startswith(r_sha)):
@@ -506,15 +629,11 @@ def _describe_run_or_commit(sha: str = "", run_obj: dict = None) -> dict:
                 title = msg[0].strip()
         except Exception:
             pass
-    vtag = _extract_version_tag(title)
-    human = f"Версия {vtag}" if vtag else "Коммит"
-    if sha:
-        human += f" (ID: {sha[:7]})"
+    human = f"Коммит {sha[:7]}" if sha else "Коммит"
     if title:
         human += f" — «{title}»"
     return {
         "build_number": "",
-        "version_tag": vtag,
         "title": title,
         "human_label": human,
         "sha": (sha or "")[:7],
@@ -528,7 +647,7 @@ def _git_blob_sha1(data: bytes) -> str:
 
 
 # ==============================================================================
-# ПОЛНЫЙ GIT-АНАЛИЗАТОР ИЗМЕНЕНИЙ (МЕЖДУ ЛЮБЫМИ СБОРКАМИ ИЛИ ЛОКАЛЬНОЙ ПАПКОЙ)
+# УНИВЕРСАЛЬНЫЙ ДВУСТОРОННИЙ GIT-АНАЛИЗАТОР (ЛЮБОЙ ИСТОЧНИК А ↔ ЛЮБОЙ ИСТОЧНИК Б)
 # ==============================================================================
 
 def _extract_python_symbols(text: str) -> dict:
@@ -641,7 +760,7 @@ def _extract_java_symbols(text: str) -> dict:
     return _extract_brace_blocks(text, pat, fmt)
 
 
-def _compact_unified_diff(old_str: str, new_str: str, max_lines: int = 0) -> list:
+def _compact_unified_diff(old_str: str, new_str: str) -> list:
     old_lines = old_str.splitlines()
     new_lines = new_str.splitlines()
     diff = list(difflib.unified_diff(old_lines, new_lines, n=2, lineterm=""))
@@ -708,7 +827,7 @@ def _analyze_single_file_diff(rel_path: str, old_bytes: bytes, new_bytes: bytes,
                 added_funcs.append(info["sig"])
             elif old_syms[k]["body"] != info["body"]:
                 modified_funcs.append(info["sig"])
-                func_diffs[info["sig"]] = _compact_unified_diff(old_syms[k]["body"], info["body"], max_lines=14)
+                func_diffs[info["sig"]] = _compact_unified_diff(old_syms[k]["body"], info["body"])
         for k, info in old_syms.items():
             if k not in new_syms:
                 removed_funcs.append(info["sig"])
@@ -742,201 +861,119 @@ def _fetch_blob_bytes(blob_sha: str, token: str = "", repo: str = "") -> bytes:
         return b""
 
 
-def compare_two_github_commits(base_sha: str, head_sha: str, base_label: str = "", head_label: str = "", token: str = "", repo: str = "") -> dict:
+def _load_Compare_Side(spec: str, folder_path: str, zip_path: str, token: str = "", repo: str = "") -> dict:
     """
-    Использует родной Git Compare API GitHub (/compare/{base}...{head}):
-    выдаёт список всех коммитов между двумя сборками, список изменённых функций и точный git diff!
+    Загружает состояние любого источника сравнения:
+    - 'LOCAL_FOLDER' -> локальная папка
+    - 'LOCAL_ZIP' -> выбранный .zip
+    - 'GH:<sha>' -> конкретная сборка/коммит на GitHub
+    Возвращает:
+      {'kind': 'local'|'gh', 'label': str, 'sha': str, 'bytes_map': dict, 'sha_map': dict}
     """
     cfg = load_config()
     rep = (repo or cfg.get("repo") or DEFAULT_REPO).strip()
-    base_meta = _describe_run_or_commit(base_sha, None)
-    head_meta = _describe_run_or_commit(head_sha, None)
-    b_lbl = base_label or base_meta.get("human_label") or base_sha[:7]
-    h_lbl = head_label or head_meta.get("human_label") or head_sha[:7]
 
-    if base_sha == head_sha or (base_sha and head_sha and base_sha[:7] == head_sha[:7]):
-        txt = (
-            "==========================================================\n"
-            "📊 GIT DIFF: СРАВНЕНИЕ СБОРОК\n"
-            "==========================================================\n"
-            f"• База (Откуда): {b_lbl}\n"
-            f"• Цель (Куда):   {h_lbl}\n"
-            "----------------------------------------------------------\n"
-            "✅ Выбрана одна и та же сборка (0 отличий)."
-        )
+    if spec == "LOCAL_FOLDER":
+        fp = (folder_path or cfg.get("source_dir") or DEFAULT_PROJECT_DIR).strip()
+        if not os.path.isdir(fp):
+            raise ValueError(f"Папка не найдена: {fp}")
+        bmap = _collect_files_from_folder(fp)
+        smap = {k: _git_blob_sha1(v) for k, v in bmap.items()}
         return {
-            "has_changes": False,
-            "short_commit_msg": "",
-            "report_text": txt,
-            "modified_count": 0,
-            "added_count": 0,
-            "removed_count": 0,
+            "kind": "local",
+            "label": f"📁 Рабочая папка ({fp})",
+            "sha": "",
+            "bytes_map": bmap,
+            "sha_map": smap,
         }
 
-    comp = gh_api(f"compare/{base_sha}...{head_sha}", "GET", token=token, repo=rep)
-    commits = comp.get("commits") or []
-    files = comp.get("files") or []
+    if spec == "LOCAL_ZIP":
+        zp = (zip_path or "").strip()
+        if not zp or not os.path.isfile(zp):
+            raise ValueError(f"Выбранный .zip архив не найден: {zp or 'путь не указан'}")
+        bmap = _collect_files_from_zip_bytes(open(zp, "rb").read())
+        smap = {k: _git_blob_sha1(v) for k, v in bmap.items()}
+        return {
+            "kind": "local",
+            "label": f"📦 Архив .zip ({zp})",
+            "sha": "",
+            "bytes_map": bmap,
+            "sha_map": smap,
+        }
 
-    # Получаем деревья base и head для AST-сравнения функций в изменённых исходниках
-    base_tree_map = {}
-    head_tree_map = {}
-    try:
-        bc = gh_api(f"git/commits/{base_sha}", "GET", token=token, repo=rep)
-        bt = gh_api(f"git/trees/{bc['tree']['sha']}?recursive=1", "GET", token=token, repo=rep)
-        base_tree_map = {it["path"]: it["sha"] for it in bt.get("tree", []) if it.get("type") == "blob"}
-    except Exception:
-        pass
-    try:
-        hc = gh_api(f"git/commits/{head_sha}", "GET", token=token, repo=rep)
-        ht = gh_api(f"git/trees/{hc['tree']['sha']}?recursive=1", "GET", token=token, repo=rep)
-        head_tree_map = {it["path"]: it["sha"] for it in ht.get("tree", []) if it.get("type") == "blob"}
-    except Exception:
-        pass
-
-    clean_files = [f for f in files if not _is_ignored_rel_path(f.get("filename") or "")]
-    added_files = [f for f in clean_files if f.get("status") == "added"]
-    removed_files = [f for f in clean_files if f.get("status") == "removed"]
-    modified_files = [f for f in clean_files if f.get("status") not in ("added", "removed")]
-
-    report_lines = []
-    report_lines.append("==========================================================")
-    report_lines.append("📊 ТОЧНЫЙ GIT DIFF МЕЖДУ СБОРКАМИ НА GITHUB")
-    report_lines.append("==========================================================")
-    report_lines.append(f"• Старая сборка (База): {b_lbl}")
-    report_lines.append(f"• Новая сборка (Цель):  {h_lbl}")
-    report_lines.append(
-        f"• Коммитов между ними: {len(commits)} | Файлов изменено: {len(modified_files)} | "
-        f"добавлено: {len(added_files)} | удалено: {len(removed_files)}"
-    )
-    report_lines.append("----------------------------------------------------------")
-
-    if commits:
-        report_lines.append(f"\n📜 ИСТОРИЯ КОММИТОВ МЕЖДУ СБОРКАМИ ({len(commits)}):")
-        for c in commits:
-            c_sha = (c.get("sha") or "")[:7]
-            c_msg = ((c.get("commit") or {}).get("message") or "").splitlines()[0]
-            c_date = (((c.get("commit") or {}).get("author") or {}).get("date") or "").replace("T", " ")[:16]
-            report_lines.append(f"  • [{c_sha}] ({c_date}) {c_msg}")
-
-    if added_files:
-        report_lines.append(f"\n🟢 ДОБАВЛЕННЫЕ ФАЙЛЫ ({len(added_files)}):")
-        for af in added_files:
-            fn = af["filename"]
-            report_lines.append(f"  + {fn} (+{af.get('additions', 0)} строк)")
-
-    if removed_files:
-        report_lines.append(f"\n🔴 УДАЛЁННЫЕ ФАЙЛЫ ({len(removed_files)}):")
-        for rf in removed_files:
-            fn = rf["filename"]
-            report_lines.append(f"  - {fn} (-{rf.get('deletions', 0)} строк)")
-
-    if modified_files:
-        report_lines.append(f"\n🟡 ИЗМЕНЁННЫЕ ФАЙЛЫ, ФУНКЦИИ И GIT PATCH ({len(modified_files)}):")
-        for mf in modified_files:
-            mp = mf["filename"]
-            patch_str = mf.get("patch") or ""
-            ext = os.path.splitext(mp)[1].lower()
-            old_b = b""
-            new_b = b""
-            if ext in (".py", ".html", ".js", ".java") and base_tree_map.get(mp) and head_tree_map.get(mp):
-                old_b = _fetch_blob_bytes(base_tree_map[mp], token=token, repo=rep)
-                new_b = _fetch_blob_bytes(head_tree_map[mp], token=token, repo=rep)
-
-            f_diff = _analyze_single_file_diff(mp, old_b, new_b, git_patch_str=patch_str)
-            report_lines.append(
-                f"\n📄 Файл: {mp} (+{mf.get('additions', f_diff['added_lines'])} / -{mf.get('deletions', f_diff['removed_lines'])} строк)"
-            )
-            if f_diff["added_funcs"]:
-                report_lines.append(f"  🟢 Добавлены функции ({len(f_diff['added_funcs'])}):")
-                for fn in f_diff["added_funcs"]:
-                    report_lines.append(f"    + {fn}")
-            if f_diff["removed_funcs"]:
-                report_lines.append(f"  🔴 Удалены функции ({len(f_diff['removed_funcs'])}):")
-                for fn in f_diff["removed_funcs"]:
-                    report_lines.append(f"    - {fn}")
-            if f_diff["modified_funcs"]:
-                report_lines.append(f"  🟡 Изменены внутри функции ({len(f_diff['modified_funcs'])}):")
-                for fn in f_diff["modified_funcs"]:
-                    report_lines.append(f"    ~ {fn}")
-                    for sl in (f_diff["func_diffs"].get(fn) or []):
-                        report_lines.append(f"        {sl}")
-
-            if patch_str:
-                report_lines.append("  🔍 Точный Git Patch по строкам:")
-                for pl in f_diff["raw_diff_preview"]:
-                    report_lines.append(f"    {pl}")
-
-    return {
-        "has_changes": bool(clean_files or commits),
-        "short_commit_msg": "",
-        "report_text": "\n".join(report_lines),
-        "modified_count": len(modified_files),
-        "added_count": len(added_files),
-        "removed_count": len(removed_files),
-    }
-
-
-def compare_local_map_with_github(local_map: dict, source_label: str, base_sha: str = "", base_label: str = "", token: str = "", repo: str = "") -> dict:
-    if not local_map:
-        raise ValueError("Нет доступных файлов для сравнения (0 файлов). Проверь «Доступ ко всем файлам»!")
-
-    cfg = load_config()
-    rep = (repo or cfg.get("repo") or DEFAULT_REPO).strip()
-    if not base_sha:
-        _, base_sha = _resolve_target_branch(token=token, repo=rep)
-    meta = _describe_run_or_commit(base_sha, None)
-    b_lbl = base_label or meta.get("human_label") or base_sha[:7]
-
-    commit_info = gh_api(f"git/commits/{base_sha}", "GET", token=token, repo=rep)
-    base_tree_sha = commit_info["tree"]["sha"]
-    tree_info = gh_api(f"git/trees/{base_tree_sha}?recursive=1", "GET", token=token, repo=rep)
-
-    # ВАЖНО: отфильтровываем мусор (__pycache__, .pyc, .log) и на стороне GitHub тоже!
-    remote_blobs = {
+    # Иначе это GitHub коммит / сборка ('GH:<sha>' или '<sha>')
+    sha = spec[3:].strip() if spec.startswith("GH:") else spec.strip()
+    if not sha:
+        _, sha = _resolve_target_branch(token=token, repo=rep)
+    meta = _describe_run_or_commit(sha, None)
+    commit_info = gh_api(f"git/commits/{sha}", "GET", token=token, repo=rep)
+    tree_sha = commit_info["tree"]["sha"]
+    tree_info = gh_api(f"git/trees/{tree_sha}?recursive=1", "GET", token=token, repo=rep)
+    smap = {
         item["path"]: item["sha"]
         for item in tree_info.get("tree", [])
         if item.get("type") == "blob" and not _is_ignored_rel_path(item.get("path") or "")
     }
+    return {
+        "kind": "gh",
+        "label": f"☁️ {meta.get('human_label') or sha[:7]}",
+        "sha": sha,
+        "bytes_map": None,
+        "sha_map": smap,
+    }
 
-    added_files = []
-    removed_files = []
-    modified_paths = []
-    unchanged_count = 0
 
-    for rel_p, loc_bytes in sorted(local_map.items()):
-        if _is_ignored_rel_path(rel_p):
-            continue
-        loc_sha = _git_blob_sha1(loc_bytes)
-        rem_sha = remote_blobs.get(rel_p)
-        if rem_sha is None:
-            added_files.append(rel_p)
-        elif rem_sha != loc_sha:
-            modified_paths.append(rel_p)
-        else:
-            unchanged_count += 1
+def compare_any_two_sources(base_spec: str, target_spec: str, base_custom_lbl: str = "", target_custom_lbl: str = "", folder_path: str = "", zip_path: str = "", token: str = "", repo: str = "") -> dict:
+    """
+    Двустороннее сравнение ЛЮБОГО источника А (База — что было) с ЛЮБЫМ источником Б (Цель — что стало).
+    Меняешь местами А и Б — полностью переворачивается знак изменений (+ на -) и генерируемое описание!
+    """
+    cfg = load_config()
+    rep = (repo or cfg.get("repo") or DEFAULT_REPO).strip()
 
-    for rem_p in sorted(remote_blobs.keys()):
-        if rem_p not in local_map:
-            removed_files.append(rem_p)
+    set_progress(True, 10, "🔬 Git-сравнение", "Загрузка структуры Источника А (База)...")
+    side_a = _load_Compare_Side(base_spec, folder_path, zip_path, token=token, repo=rep)
+
+    set_progress(True, 30, "🔬 Git-сравнение", "Загрузка структуры Источника Б (Цель)...")
+    side_b = _load_Compare_Side(target_spec, folder_path, zip_path, token=token, repo=rep)
+
+    lbl_a = base_custom_lbl or side_a["label"]
+    lbl_b = target_custom_lbl or side_b["label"]
+
+    sha_map_a = side_a["sha_map"]
+    sha_map_b = side_b["sha_map"]
+
+    added_paths = sorted([p for p in sha_map_b if p not in sha_map_a])
+    removed_paths = sorted([p for p in sha_map_a if p not in sha_map_b])
+    modified_paths = sorted([p for p in sha_map_b if p in sha_map_a and sha_map_a[p] != sha_map_b[p]])
+    unchanged_count = sum(1 for p in sha_map_b if p in sha_map_a and sha_map_a[p] == sha_map_b[p])
+
+    # Если оба источника — сборки GitHub, дополнительно подтягиваем историю коммитов между ними
+    commits_between = []
+    if side_a["kind"] == "gh" and side_b["kind"] == "gh" and side_a["sha"] != side_b["sha"]:
+        try:
+            set_progress(True, 45, "🔬 Git-сравнение", "Запрос истории коммитов между сборками...")
+            comp = gh_api(f"compare/{side_a['sha']}...{side_b['sha']}", "GET", token=token, repo=rep)
+            commits_between = comp.get("commits") or []
+        except Exception:
+            pass
 
     report_lines = []
     report_lines.append("==========================================================")
-    report_lines.append("📊 ОТЧЁТ ОБ ИЗМЕНЕНИЯХ (GIT DIFF: СБОРКА vs ЛОКАЛЬНО)")
+    report_lines.append("📊 ДВУСТОРОННИЙ GIT DIFF (А ➔ Б)")
     report_lines.append("==========================================================")
-    report_lines.append(f"• Базовая сборка на GitHub: {b_lbl}")
-    report_lines.append(f"• Сравниваем с:             {source_label}")
+    report_lines.append(f"• А (База / Старое): {lbl_a}")
+    report_lines.append(f"• Б (Цель / Новое):  {lbl_b}")
     report_lines.append(
-        f"• Итог по чистым файлам кода: изменено: {len(modified_paths)} | добавлено: {len(added_files)} | "
-        f"удалено: {len(removed_files)} | совпадают 1-в-1: {unchanged_count}"
+        f"• Итог (Б относительно А): изменено файлов: {len(modified_paths)} | "
+        f"добавлено в Б: {len(added_files := added_paths)} | удалено в Б: {len(removed_paths)} | "
+        f"совпадают 1-в-1: {unchanged_count}"
     )
     report_lines.append("----------------------------------------------------------")
 
-    if not modified_paths and not added_files and not removed_files:
-        report_lines.append(
-            f"✅ Код в «{source_label}» на 100% совпадает с «{b_lbl}» (0 отличий в коде)!\n"
-            "💡 Подсказка: если хочешь увидеть разницу со старой сборкой (например #245 или #247), "
-            "просто выбери её в верхнем выпадающем списке «База (С какой сборкой сравнивать)» и нажми кнопку сравнения!"
-        )
+    if not modified_paths and not added_paths and not removed_paths:
+        set_progress(False, 100, "Готово", "Отличий нет")
+        report_lines.append("✅ Код в Источнике А и Источнике Б совпадает на 100% (0 отличий в коде)!")
         return {
             "has_changes": False,
             "short_commit_msg": "",
@@ -946,39 +983,71 @@ def compare_local_map_with_github(local_map: dict, source_label: str, base_sha: 
             "removed_count": 0,
         }
 
-    commit_summary_parts = []
+    if commits_between:
+        report_lines.append(f"\n📜 КОММИТЫ МЕЖДУ А И Б ({len(commits_between)}):")
+        for c in commits_between:
+            c_sha = (c.get("sha") or "")[:7]
+            c_msg = ((c.get("commit") or {}).get("message") or "").splitlines()[0]
+            c_date = (((c.get("commit") or {}).get("author") or {}).get("date") or "").replace("T", " ")[:16]
+            report_lines.append(f"  • [{c_sha}] ({c_date}) {c_msg}")
 
-    if added_files:
-        report_lines.append(f"\n🟢 НОВЫЕ ФАЙЛЫ ({len(added_files)}):")
-        for af in added_files:
-            info = _analyze_single_file_diff(af, b"", local_map[af])
+    def _get_side_file_bytes(side: dict, rel_p: str) -> bytes:
+        if side["bytes_map"] is not None:
+            return side["bytes_map"].get(rel_p, b"")
+        b_sha = side["sha_map"].get(rel_p, "")
+        return _fetch_blob_bytes(b_sha, token=token, repo=rep)
+
+    commit_summary_parts = []
+    total_work = max(1, len(added_paths) + len(removed_paths) + len(modified_paths))
+    done_work = 0
+
+    if added_paths:
+        report_lines.append(f"\n🟢 НОВЫЕ ФАЙЛЫ В «Б» ({len(added_paths)}):")
+        for af in added_paths:
+            done_work += 1
+            pct = 50 + int((done_work * 45) / total_work)
+            set_progress(True, pct, "🔬 Git-сравнение", f"Разбор нового файла {af}...")
+            new_b = _get_side_file_bytes(side_b, af)
+            info = _analyze_single_file_diff(af, b"", new_b)
             report_lines.append(f"  + {af} (+{info['added_lines']} строк)")
             for fn in info["added_funcs"]:
                 report_lines.append(f"      🟢 Новая функция: {fn}")
             commit_summary_parts.append(f"+{os.path.basename(af)}")
 
-    if removed_files:
-        report_lines.append(f"\n🔴 УДАЛЁННЫЕ ФАЙЛЫ ({len(removed_files)}):")
-        for rf in removed_files:
-            report_lines.append(f"  - {rf}")
+    if removed_paths:
+        report_lines.append(f"\n🔴 УДАЛЁННЫЕ В «Б» ФАЙЛЫ ({len(removed_paths)}):")
+        for rf in removed_paths:
+            done_work += 1
+            pct = 50 + int((done_work * 45) / total_work)
+            set_progress(True, pct, "🔬 Git-сравнение", f"Проверка удалённого файла {rf}...")
+            old_b = _get_side_file_bytes(side_a, rf)
+            info = _analyze_single_file_diff(rf, old_b, b"")
+            report_lines.append(f"  - {rf} (-{info['removed_lines']} строк)")
+            for fn in info["removed_funcs"]:
+                report_lines.append(f"      🔴 Удалена функция: {fn}")
             commit_summary_parts.append(f"-{os.path.basename(rf)}")
 
     if modified_paths:
         report_lines.append(f"\n🟡 ИЗМЕНЁННЫЕ ФАЙЛЫ И ФУНКЦИИ ({len(modified_paths)}):")
         for mp in modified_paths:
-            old_bytes = _fetch_blob_bytes(remote_blobs[mp], token=token, repo=rep)
-            f_diff = _analyze_single_file_diff(mp, old_bytes, local_map[mp])
+            done_work += 1
+            pct = 50 + int((done_work * 45) / total_work)
+            set_progress(True, pct, "🔬 Git-сравнение", f"Посимвольная сверка функций в {mp}...")
+            old_b = _get_side_file_bytes(side_a, mp)
+            new_b = _get_side_file_bytes(side_b, mp)
+
+            f_diff = _analyze_single_file_diff(mp, old_b, new_b)
             report_lines.append(
                 f"\n📄 Файл: {mp} (+{f_diff['added_lines']} / -{f_diff['removed_lines']} строк)"
             )
 
             if f_diff["added_funcs"]:
-                report_lines.append(f"  🟢 Добавлены функции ({len(f_diff['added_funcs'])}):")
+                report_lines.append(f"  🟢 Добавлены функции в Б ({len(f_diff['added_funcs'])}):")
                 for fn in f_diff["added_funcs"]:
                     report_lines.append(f"    + {fn}")
 
             if f_diff["removed_funcs"]:
-                report_lines.append(f"  🔴 Удалены функции ({len(f_diff['removed_funcs'])}):")
+                report_lines.append(f"  🔴 Удалены функции в Б ({len(f_diff['removed_funcs'])}):")
                 for fn in f_diff["removed_funcs"]:
                     report_lines.append(f"    - {fn}")
 
@@ -986,12 +1055,11 @@ def compare_local_map_with_github(local_map: dict, source_label: str, base_sha: 
                 report_lines.append(f"  🟡 Изменены внутри функции ({len(f_diff['modified_funcs'])}):")
                 for fn in f_diff["modified_funcs"]:
                     report_lines.append(f"    ~ {fn}")
-                    sub_lines = f_diff["func_diffs"].get(fn) or []
-                    for sl in sub_lines:
+                    for sl in (f_diff["func_diffs"].get(fn) or []):
                         report_lines.append(f"        {sl}")
 
             if f_diff["raw_diff_preview"]:
-                report_lines.append("  🔍 Построчный diff:")
+                report_lines.append("  🔍 Полный построчный Git Diff по файлу:")
                 for rl in f_diff["raw_diff_preview"]:
                     report_lines.append(f"    {rl}")
 
@@ -1017,16 +1085,17 @@ def compare_local_map_with_github(local_map: dict, source_label: str, base_sha: 
         short_commit = short_commit[:97] + "..."
 
     report_lines.append("\n==========================================================")
-    report_lines.append(f"💡 Готовое краткое описание для сборки: {short_commit}")
+    report_lines.append(f"💡 Готовое краткое описание (А ➔ Б): {short_commit}")
     report_lines.append("==========================================================")
 
+    set_progress(False, 100, "Готово", "Сравнение завершено")
     return {
         "has_changes": True,
         "short_commit_msg": short_commit,
         "report_text": "\n".join(report_lines),
         "modified_count": len(modified_paths),
-        "added_count": len(added_files),
-        "removed_count": len(removed_files),
+        "added_count": len(added_paths),
+        "removed_count": len(removed_paths),
     }
 
 
@@ -1099,7 +1168,6 @@ def _resolve_target_branch(token: str = "", repo: str = "") -> tuple:
 
 
 def _ensure_build_yml_stamps_version(file_map: dict):
-    """Автоматически добавляет безопасный Python-штамп versionCode и versionName в .github/workflows/build.yml."""
     yml_key = ".github/workflows/build.yml"
     if yml_key in file_map:
         try:
@@ -1143,6 +1211,7 @@ def push_file_map_to_github(file_map: dict, commit_msg: str, token: str = "", re
         raise ValueError(
             "Android скрыл файлы в этой папке (0 файлов). Нажми красную кнопку «🔓 Выдать Доступ ко всем файлам» вверху экрана и повтори!"
         )
+    set_progress(True, 5, "📤 Экспорт на GitHub", "Проверка дерева файлов в репозитории GitHub...")
     _ensure_build_yml_stamps_version(file_map)
     branch_name, head_sha = _resolve_target_branch(token=token, repo=repo)
     commit_info = gh_api(f"git/commits/{head_sha}", "GET", token=token, repo=repo)
@@ -1154,31 +1223,37 @@ def push_file_map_to_github(file_map: dict, commit_msg: str, token: str = "", re
         if item.get("type") == "blob"
     }
 
-    tree_updates = []
-    changed_count = 0
-
+    to_upload = []
     for rel_path, content_bytes in file_map.items():
         local_sha = _git_blob_sha1(content_bytes)
         if remote_blobs.get(rel_path) != local_sha:
-            blob_res = gh_api(
-                "git/blobs",
-                "POST",
-                {
-                    "content": base64.b64encode(content_bytes).decode("ascii"),
-                    "encoding": "base64",
-                },
-                token=token,
-                repo=repo,
-            )
-            mode_str = "100755" if rel_path.endswith(("gradlew", ".sh")) else "100644"
-            tree_updates.append({
-                "path": rel_path,
-                "mode": mode_str,
-                "type": "blob",
-                "sha": blob_res["sha"],
-            })
-            changed_count += 1
+            to_upload.append((rel_path, content_bytes))
 
+    tree_updates = []
+    changed_count = len(to_upload)
+
+    for idx, (rel_path, content_bytes) in enumerate(to_upload, 1):
+        pct = 15 + int((idx * 70) / max(1, changed_count))
+        set_progress(True, pct, "📤 Экспорт на GitHub", f"Отправка файла {idx} из {changed_count}: {rel_path}...")
+        blob_res = gh_api(
+            "git/blobs",
+            "POST",
+            {
+                "content": base64.b64encode(content_bytes).decode("ascii"),
+                "encoding": "base64",
+            },
+            token=token,
+            repo=repo,
+        )
+        mode_str = "100755" if rel_path.endswith(("gradlew", ".sh")) else "100644"
+        tree_updates.append({
+            "path": rel_path,
+            "mode": mode_str,
+            "type": "blob",
+            "sha": blob_res["sha"],
+        })
+
+    set_progress(True, 90, "📤 Экспорт на GitHub", "Формирование коммита и запуск GitHub Actions...")
     if tree_updates:
         new_tree = gh_api(
             "git/trees",
@@ -1211,6 +1286,7 @@ def push_file_map_to_github(file_map: dict, commit_msg: str, token: str = "", re
         token=token,
         repo=repo,
     )
+    set_progress(False, 100, "Готово", "Отправлено на GitHub")
     return {
         "commit_sha": new_commit_sha[:7],
         "commit_msg": commit_msg,
@@ -1226,9 +1302,13 @@ def _unpack_zip_bytes_to_folder(zip_bytes: bytes, target_folder: str) -> int:
     if not fmap:
         raise ValueError("В архиве не найдено файлов для распаковки.")
     written = 0
-    for rel_p, content_b in fmap.items():
+    total = len(fmap)
+    for idx, (rel_p, content_b) in enumerate(fmap.items(), 1):
         if rel_p.startswith(".git/") or rel_p == ".git":
             continue
+        if idx % 5 == 0 or idx == total:
+            pct = 75 + int((idx * 24) / max(1, total))
+            set_progress(True, pct, "📥 Распаковка в папку", f"Запись файла {idx} из {total}: {rel_p}")
         dest_p = os.path.join(target_folder, rel_p)
         os.makedirs(os.path.dirname(dest_p), exist_ok=True)
         with open(dest_p, "wb") as f:
@@ -1310,6 +1390,9 @@ class BuilderHandler(BaseHTTPRequestHandler):
             self.wfile.write(raw)
             return
 
+        if path == "/api/progress":
+            return self._send_json({"status": "ok", "progress": get_progress()})
+
         if path == "/api/config":
             cfg = load_config()
             self._send_json({"status": "ok", "config": cfg})
@@ -1333,6 +1416,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
 
             dirs_out = []
             zips_out = []
+            apks_out = []
             try:
                 for entry in sorted(os.listdir(req_dir), key=lambda x: x.lower()):
                     if entry.startswith("."):
@@ -1340,9 +1424,14 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     fp = os.path.join(req_dir, entry)
                     if os.path.isdir(fp):
                         dirs_out.append(entry)
-                    elif os.path.isfile(fp) and entry.lower().endswith(".zip"):
-                        sz_mb = round(os.path.getsize(fp) / (1024.0 * 1024.0), 2)
-                        zips_out.append({"name": entry, "path": fp, "mb": sz_mb})
+                    elif os.path.isfile(fp):
+                        low = entry.lower()
+                        if low.endswith(".zip"):
+                            sz_mb = round(os.path.getsize(fp) / (1024.0 * 1024.0), 2)
+                            zips_out.append({"name": entry, "path": fp, "mb": sz_mb})
+                        elif low.endswith(".apk"):
+                            sz_mb = round(os.path.getsize(fp) / (1024.0 * 1024.0), 2)
+                            apks_out.append({"name": entry, "path": fp, "mb": sz_mb})
             except Exception as e:
                 return self._send_json({"status": "error", "error": str(e)})
 
@@ -1353,6 +1442,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 "parent_dir": parent_dir,
                 "dirs": dirs_out,
                 "zips": zips_out,
+                "apks": apks_out,
             })
             return
 
@@ -1446,7 +1536,8 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 completed_at = qs.get("completed_at", [""])[0]
                 if not job_id:
                     return self._send_json({"status": "error", "error": "Не указан job_id"})
-                raw_bytes = gh_download_bytes(f"actions/jobs/{job_id}/logs")
+                raw_bytes = gh_download_bytes(f"actions/jobs/{job_id}/logs", task_title="Загрузка лога ошибки")
+                set_progress(False, 100)
                 raw_text = raw_bytes.decode("utf-8", errors="replace")
                 step_log = extract_failed_step_log(raw_text, step_name, started_at, completed_at)
                 self._send_json({
@@ -1455,6 +1546,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     "error_log": step_log,
                 })
             except Exception as e:
+                set_progress(False, 0)
                 self._send_json({"status": "error", "error": str(e)})
             return
 
@@ -1476,45 +1568,27 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 return self._send_json({"status": "ok", "config": cfg})
 
             if path == "/api/installed_info":
-                if data.get("manual_installed_build") is not None:
-                    save_config({"manual_installed_build": int(data["manual_installed_build"])})
                 hints = data.get("bridge_hints") or {}
                 inst = resolve_installed_apps_status(hints, _CACHED_RUNS_LIST)
                 return self._send_json({"status": "ok", "installed": inst})
 
             if path == "/api/compare":
-                cfg = load_config()
-                base_sha = (data.get("base_sha") or "").strip()
-                base_label = (data.get("base_label") or "").strip()
-                target_type = (data.get("target_type") or "folder").strip()
-                target_sha = (data.get("target_sha") or "").strip()
-                target_label = (data.get("target_label") or "").strip()
+                base_spec = (data.get("base_spec") or "LOCAL_FOLDER").strip()
+                target_spec = (data.get("target_spec") or "LOCAL_FOLDER").strip()
+                base_lbl = (data.get("base_label") or "").strip()
+                target_lbl = (data.get("target_label") or "").strip()
+                folder_p = (data.get("folder_path") or "").strip()
+                zip_p = (data.get("zip_path") or "").strip()
 
-                if not base_sha:
-                    _, base_sha = _resolve_target_branch()
-
-                if target_type == "github_run":
-                    if not target_sha:
-                        _, target_sha = _resolve_target_branch()
-                    res = compare_two_github_commits(base_sha, target_sha, base_label=base_label, head_label=target_label)
-                    return self._send_json({"status": "ok", **res})
-
-                elif target_type == "zip":
-                    zip_path = (data.get("zip_path") or "").strip()
-                    if not zip_path or not os.path.isfile(zip_path):
-                        return self._send_json({"status": "error", "error": f"Файл .zip не найден: {zip_path}"})
-                    fmap = _collect_files_from_zip_bytes(open(zip_path, "rb").read())
-                    res = compare_local_map_with_github(fmap, f"Архив {zip_path}", base_sha=base_sha, base_label=base_label)
-                    return self._send_json({"status": "ok", **res})
-
-                else:
-                    folder_p = (data.get("folder_path") or cfg.get("source_dir") or DEFAULT_PROJECT_DIR).strip()
-                    if not os.path.isdir(folder_p):
-                        return self._send_json({"status": "error", "error": f"Папка не найдена: {folder_p}"})
-                    save_config({"source_dir": folder_p})
-                    fmap = _collect_files_from_folder(folder_p)
-                    res = compare_local_map_with_github(fmap, f"Рабочая папка {folder_p}", base_sha=base_sha, base_label=base_label)
-                    return self._send_json({"status": "ok", **res})
+                res = compare_any_two_sources(
+                    base_spec=base_spec,
+                    target_spec=target_spec,
+                    base_custom_lbl=base_lbl,
+                    target_custom_lbl=target_lbl,
+                    folder_path=folder_p,
+                    zip_path=zip_p,
+                )
+                return self._send_json({"status": "ok", **res})
 
             if path == "/api/fs/mkdir":
                 parent = (data.get("parent") or DEFAULT_SAVE_DIR).strip()
@@ -1534,6 +1608,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
                         "status": "error",
                         "error": f"Файл архива не найден или нет доступа: {zip_path}. Проверь «Доступ ко всем файлам»!"
                     })
+                set_progress(True, 3, "📤 Отправка .zip на GitHub", f"Чтение архива {os.path.basename(zip_path)}...")
                 file_map = _collect_files_from_zip_bytes(open(zip_path, "rb").read())
                 res = push_file_map_to_github(file_map, commit_msg)
                 return self._send_json({"status": "ok", **res})
@@ -1544,6 +1619,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 commit_msg = (data.get("message") or "").strip() or f"build(upload): push {fname} via JennyBuilder"
                 if not b64_str:
                     return self._send_json({"status": "error", "error": "Пустой архив"})
+                set_progress(True, 3, "📤 Отправка .zip на GitHub", f"Распаковка {fname}...")
                 zip_bytes = base64.b64decode(b64_str)
                 file_map = _collect_files_from_zip_bytes(zip_bytes)
                 res = push_file_map_to_github(file_map, commit_msg)
@@ -1559,6 +1635,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
                         "error": f"Папка не найдена или скрыта Android: {folder_p}. Разреши «Доступ ко всем файлам»!"
                     })
                 save_config({"source_dir": folder_p})
+                set_progress(True, 3, "📤 Экспорт папки на GitHub", f"Сканирование файлов в {folder_p}...")
                 file_map = _collect_files_from_folder(folder_p)
                 res = push_file_map_to_github(file_map, commit_msg)
                 return self._send_json({"status": "ok", **res})
@@ -1567,40 +1644,43 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 cfg = load_config()
                 run_id = data.get("run_id")
                 run_number = data.get("run_number") or run_id
-                version_tag = (data.get("version_tag") or "").strip()
                 save_dir = (data.get("save_dir") or cfg.get("save_dir") or DEFAULT_SAVE_DIR).strip()
                 os.makedirs(save_dir, exist_ok=True)
-                try:
-                    save_config({"save_dir": save_dir, "manual_installed_build": int(run_number)})
-                except Exception:
-                    save_config({"save_dir": save_dir})
+                save_config({"save_dir": save_dir})
 
+                set_progress(True, 2, f"📥 Скачивание APK #{run_number}", "Получение ссылки на артефакт сборки...")
                 arts = gh_api(f"actions/runs/{run_id}/artifacts", "GET")
                 art_list = arts.get("artifacts", [])
                 if not art_list:
+                    set_progress(False, 0)
                     return self._send_json({"status": "error", "error": "Артефакт APK ещё не сформирован в этой сборке"})
                 art_id = art_list[0]["id"]
-                zip_bytes = gh_download_bytes(f"actions/artifacts/{art_id}/zip")
+                zip_bytes = gh_download_bytes(
+                    f"actions/artifacts/{art_id}/zip",
+                    task_title=f"📥 Скачивание APK #{run_number} (32 потока)",
+                    threads=32,
+                )
 
                 repo_short = cfg["repo"].split("/")[-1]
-                ver_suffix = f"_{version_tag}" if version_tag else ""
                 out_apk_name = f"{repo_short}_#{run_number}.apk"
                 out_apk_path = os.path.join(save_dir, out_apk_name)
 
+                set_progress(True, 98, f"📥 Распаковка APK #{run_number}", f"Сохранение в {out_apk_path}...")
                 with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
                     apk_members = [m for m in zf.namelist() if m.lower().endswith(".apk")]
                     if not apk_members:
+                        set_progress(False, 0)
                         return self._send_json({"status": "error", "error": "Внутри артефакта не найден .apk файл"})
                     with open(out_apk_path, "wb") as out_f:
                         out_f.write(zf.read(apk_members[0]))
 
                 sz_mb = round(os.path.getsize(out_apk_path) / (1024.0 * 1024.0), 2)
+                set_progress(False, 100, "Готово", f"APK #{run_number} сохранён")
                 return self._send_json({
                     "status": "ok",
                     "apk_path": out_apk_path,
                     "size_mb": sz_mb,
                     "run_number": run_number,
-                    "version_tag": version_tag,
                 })
 
             if path == "/api/download_last_good_zip":
@@ -1609,6 +1689,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 os.makedirs(save_dir, exist_ok=True)
                 save_config({"save_dir": save_dir})
 
+                set_progress(True, 5, "📦 Скачивание .zip с GitHub", "Поиск последней успешной сборки...")
                 runs_data = gh_api("actions/runs?conclusion=success&per_page=5", "GET")
                 good_run = None
                 for r in runs_data.get("workflow_runs", []):
@@ -1623,15 +1704,18 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     br, sha = _resolve_target_branch()
                     meta = _describe_run_or_commit(sha, None)
 
-                raw_zip_bytes = gh_download_bytes(f"zipball/{sha}")
+                bnum = meta.get("build_number") or "latest"
+                raw_zip_bytes = gh_download_bytes(
+                    f"zipball/{sha}",
+                    task_title=f"📦 Скачивание исходников Сборки #{bnum}",
+                    threads=32,
+                )
 
                 repo_short = cfg["repo"].split("/")[-1]
-                bnum = meta.get("build_number") or "latest"
-                vtag = meta.get("version_tag")
-                ver_part = f"_{vtag}" if vtag else ""
                 out_zip_name = f"{repo_short}_#{bnum}_clean.zip"
                 out_zip_path = os.path.join(save_dir, out_zip_name)
 
+                set_progress(True, 95, "📦 Упаковка чистого .zip", f"Сохранение {out_zip_name}...")
                 with zipfile.ZipFile(io.BytesIO(raw_zip_bytes), "r") as zin, zipfile.ZipFile(out_zip_path, "w", zipfile.ZIP_DEFLATED) as zout:
                     for item in zin.infolist():
                         parts = item.filename.split("/", 1)
@@ -1641,12 +1725,12 @@ class BuilderHandler(BaseHTTPRequestHandler):
                         zout.writestr(clean_rel, zin.read(item.filename))
 
                 sz_mb = round(os.path.getsize(out_zip_path) / (1024.0 * 1024.0), 2)
+                set_progress(False, 100, "Готово", "Архив сохранён")
                 return self._send_json({
                     "status": "ok",
                     "zip_path": out_zip_path,
                     "size_mb": sz_mb,
                     "build_number": bnum,
-                    "version_tag": vtag,
                     "title": meta.get("title"),
                     "human_label": meta.get("human_label"),
                 })
@@ -1656,6 +1740,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 folder_p = (data.get("folder_path") or cfg.get("source_dir") or DEFAULT_PROJECT_DIR).strip()
                 save_config({"source_dir": folder_p})
 
+                set_progress(True, 5, "⬇️ Импорт с GitHub в папку", "Поиск последней успешной сборки...")
                 runs_data = gh_api("actions/runs?conclusion=success&per_page=5", "GET")
                 good_runs = [r for r in runs_data.get("workflow_runs", []) if r.get("conclusion") == "success"]
                 if good_runs:
@@ -1665,14 +1750,19 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     _, sha = _resolve_target_branch()
                     meta = _describe_run_or_commit(sha, None)
 
-                raw_zip_bytes = gh_download_bytes(f"zipball/{sha}")
+                bnum = meta.get("build_number") or "latest"
+                raw_zip_bytes = gh_download_bytes(
+                    f"zipball/{sha}",
+                    task_title=f"⬇️ Скачивание Сборки #{bnum} с GitHub",
+                    threads=32,
+                )
                 written = _unpack_zip_bytes_to_folder(raw_zip_bytes, folder_p)
+                set_progress(False, 100, "Готово", f"Записано {written} файлов")
                 return self._send_json({
                     "status": "ok",
                     "folder_path": folder_p,
                     "written_files": written,
                     "build_number": meta.get("build_number"),
-                    "version_tag": meta.get("version_tag"),
                     "title": meta.get("title"),
                     "human_label": meta.get("human_label"),
                 })
@@ -1684,7 +1774,9 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 if not zip_path or not os.path.isfile(zip_path):
                     return self._send_json({"status": "error", "error": f"Архив не найден: {zip_path}"})
                 save_config({"source_dir": folder_p})
+                set_progress(True, 20, "📥 Распаковка .zip в папку", f"Чтение {os.path.basename(zip_path)}...")
                 written = _unpack_zip_bytes_to_folder(open(zip_path, "rb").read(), folder_p)
+                set_progress(False, 100, "Готово", f"Записано {written} файлов")
                 return self._send_json({
                     "status": "ok",
                     "zip_path": zip_path,
@@ -1704,16 +1796,22 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 os.makedirs(save_dir, exist_ok=True)
                 proj_name = os.path.basename(folder_p.rstrip("/")) or "Project"
                 out_zip_path = os.path.join(save_dir, f"{proj_name}_clean_local.zip")
+                set_progress(True, 15, "📦 Упаковка папки в .zip", f"Сбор файлов из {folder_p}...")
                 fmap = _collect_files_from_folder(folder_p)
                 if not fmap:
+                    set_progress(False, 0)
                     return self._send_json({
                         "status": "error",
                         "error": "Android скрыл файлы в этой папке (0 файлов). Нажми «🔓 Выдать Доступ ко всем файлам» вверху экрана и повтори!"
                     })
+                total_f = len(fmap)
                 with zipfile.ZipFile(out_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for rel_p, content_b in fmap.items():
+                    for idx, (rel_p, content_b) in enumerate(fmap.items(), 1):
+                        if idx % 5 == 0 or idx == total_f:
+                            set_progress(True, 20 + int((idx * 75) / max(1, total_f)), "📦 Упаковка папки в .zip", f"Сжатие {idx} из {total_f}: {rel_p}")
                         zf.writestr(rel_p, content_b)
                 sz_mb = round(os.path.getsize(out_zip_path) / (1024.0 * 1024.0), 2)
+                set_progress(False, 100, "Готово", "Архив упакован")
                 return self._send_json({
                     "status": "ok",
                     "folder_path": folder_p,
@@ -1724,6 +1822,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
 
             self._send_json({"status": "error", "error": "Unknown endpoint"}, 404)
         except Exception as e:
+            set_progress(False, 0)
             self._send_json({"status": "error", "error": f"{e}"})
 
 

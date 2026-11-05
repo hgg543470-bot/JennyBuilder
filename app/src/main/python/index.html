@@ -20,7 +20,7 @@
     font-size: 13px; font-weight: 700; color: #d2a8ff;
     margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;
   }
-  input[type="text"], input[type="password"], select {
+  input[type="text"], input[type="password"] {
     width: 100%; padding: 8px 10px; border-radius: 8px;
     border: 1px solid #30363d; background: #090d13; color: #fff;
     font-size: 12px; margin-bottom: 6px;
@@ -54,7 +54,7 @@
   .run-item {
     padding: 8px; border-radius: 8px; background: #0d1117;
     border: 1px solid #21262d; margin-bottom: 6px;
-    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    display: flex; justify-content: space-between; align-items: center; gap: 6px;
   }
   .status-box {
     padding: 8px 10px; border-radius: 8px; background: #090d13;
@@ -80,24 +80,24 @@
     margin: 8px 0; border: 1px solid #30363d;
   }
   .diff-pre {
-    max-height: 310px; overflow-y: auto; background: #090d13;
+    max-height: 330px; overflow-y: auto; background: #090d13;
     padding: 8px; border-radius: 6px; font-family: monospace;
     font-size: 10.5px; color: #e6edf3; white-space: pre-wrap; word-break: break-word;
     margin: 8px 0; border: 1px solid #30363d; line-height: 1.35;
   }
   .modal-bg {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+    position: fixed; inset: 0; background: rgba(0,0,0,0.86);
     display: none; align-items: center; justify-content: center; padding: 12px; z-index: 9999;
   }
   .modal-box {
-    width: 100%; max-width: 420px; max-height: 85vh; overflow-y: auto;
+    width: 100%; max-width: 430px; max-height: 86vh; overflow-y: auto;
     background: #161b22; border: 1px solid #a371f7; border-radius: 12px; padding: 12px;
   }
   .dir-item {
-    padding: 8px; border-bottom: 1px solid #21262d; cursor: pointer;
+    padding: 9px 8px; border-bottom: 1px solid #21262d; cursor: pointer;
     display: flex; justify-content: space-between; align-items: center; font-size: 12px;
   }
-  .dir-item:hover { background: #21262d; }
+  .dir-item:active, .dir-item:hover { background: #21262d; }
   .perm-banner {
     background: #2d1117; border: 1px solid #ff7b72; border-radius: 10px;
     padding: 10px; margin-bottom: 10px; display: none;
@@ -111,9 +111,52 @@
     background: rgba(46,160,67,0.3); border: 1px solid #3fb950;
     color: #7ee787; font-size: 10px; font-weight: bold; margin-left: 4px;
   }
+  /* Кастомная кнопка выпадающего списка (вместо нативного <select>) */
+  .picker-btn {
+    width: 100%; text-align: left; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid #39c5cf; background: #090d13; color: #fff;
+    font-size: 11.5px; font-weight: 600; cursor: pointer;
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    margin-bottom: 6px;
+  }
+  .picker-btn:active { background: #16222f; }
+  /* Живая шкала прогресса (Progress Bar) */
+  .prog-wrap {
+    position: sticky; top: 6px; z-index: 8888;
+    background: #0d1824; border: 1px solid #58a6ff; border-radius: 10px;
+    padding: 9px 11px; margin-bottom: 10px; display: none;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.7);
+  }
+  .prog-track {
+    width: 100%; height: 9px; background: #090d13;
+    border-radius: 6px; overflow: hidden; border: 1px solid #30363d; margin: 5px 0;
+  }
+  .prog-fill {
+    height: 100%; width: 0%;
+    background: linear-gradient(90deg, #39c5cf, #58a6ff, #a371f7);
+    transition: width 0.2s ease;
+  }
+  .mt-row {
+    display: flex; justify-content: space-between; padding: 4px 0;
+    border-bottom: 1px dashed #21262d; font-size: 11.5px;
+  }
+  .mt-lbl { color: #8b949e; }
+  .mt-val { color: #e6edf3; font-weight: 600; text-align: right; word-break: break-all; max-width: 65%; }
 </style>
 </head>
 <body>
+
+<!-- ЖИВАЯ ШКАЛА ВЫПОЛНЯЕМЫХ ДЕЙСТВИЙ (PROGRESS BAR) -->
+<div id="liveProgressBanner" class="prog-wrap">
+  <div style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;font-weight:bold;color:#79c0ff;">
+    <span id="progTitleTxt">⏳ Выполнение...</span>
+    <span id="progPctTxt" style="color:#7ee787;">0% • 0.0 сек</span>
+  </div>
+  <div class="prog-track">
+    <div id="progBarFill" class="prog-fill"></div>
+  </div>
+  <div id="progDetailTxt" style="font-size:10.5px;color:#c9d1d9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Подготовка...</div>
+</div>
 
 <!-- БАННЕР РАЗРЕШЕНИЯ ДОСТУПА К ФАЙЛАМ ANDROID 11-16 -->
 <div id="permBanner" class="perm-banner">
@@ -130,7 +173,7 @@
 
 <div class="card">
   <div class="card-title">
-    <span>🛠️ JENNY BUILDER v1.6</span>
+    <span>🛠️ JENNY BUILDER v1.7</span>
     <button class="btn" style="width:auto;padding:4px 8px;font-size:11px;" onclick="toggleSettings()">⚙️ Настройки</button>
   </div>
   <div id="settingsArea" style="display:none;margin-top:6px;border-top:1px solid #30363d;padding-top:8px;">
@@ -168,26 +211,37 @@
   </div>
 </div>
 
-<!-- 1. РАБОТА С АРХИВОМ, ПАПКОЙ И GIT DIFF -->
+<!-- 1. РАБОТА С АРХИВОМ, ПАПКОЙ И ДВУСТОРОННИМ GIT DIFF -->
 <div class="card">
   <div class="card-title">📤 1. ОБМЕН МЕЖДУ ПАПКОЙ ПРОЕКТА, АРХИВОМ (.ZIP) И GITHUB</div>
   <input type="text" id="commitMsgInput" placeholder="Описание новой сборки, например: v166: фикс кнопок (необязательно)">
 
-  <!-- GIT-СКАНЕР С ВЫПАДАЮЩИМ СПИСКОМ СБОРОК -->
+  <!-- ДВУСТОРОННИЙ GIT-СКАНЕР С КАСТОМНЫМ ВЫБОРОМ ЛЮБЫХ ИСТОЧНИКОВ -->
   <div style="margin-bottom:10px;padding:9px;background:#0d141d;border:1px solid #39c5cf;border-radius:10px;">
-    <div style="font-size:11.5px;font-weight:bold;color:#76e3ea;margin-bottom:6px;">
-      🔬 GIT-СРАВНЕНИЕ СБОРОК И ЛОКАЛЬНОГО КОДА (ДО ПОСЛЕДНЕГО СИМВОЛА):
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <span style="font-size:11.5px;font-weight:bold;color:#76e3ea;">
+        🔬 ДВУСТОРОННЕЕ СРАВНЕНИЕ (А ➔ Б):
+      </span>
+      <button class="btn btn-purple" style="width:auto;padding:3px 8px;font-size:10.5px;" onclick="swapComparisonSides()">
+        ⇅ Поменять местами (А ↔ Б)
+      </button>
     </div>
 
-    <div style="font-size:10.5px;color:#8b949e;margin-bottom:2px;">1. Базовая сборка с GitHub (С какой сборкой сравнивать):</div>
-    <select id="diffBaseSelect" style="margin-bottom:6px;"></select>
+    <div style="font-size:10.5px;color:#8b949e;margin-bottom:2px;">1. Источник А (База / Старое — относительно чего сравнивать):</div>
+    <button type="button" class="picker-btn" onclick="openComparePicker('base')">
+      <span id="lblCompareBase" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📲 Установленная сейчас сборка</span>
+      <span style="color:#39c5cf;font-weight:bold;">▾ Выбрать</span>
+    </button>
 
-    <div style="font-size:10.5px;color:#8b949e;margin-bottom:2px;">2. Цель сравнения (Что сравнивать с выбранной выше сборкой):</div>
-    <select id="diffTargetSelect" style="margin-bottom:8px;"></select>
+    <div style="font-size:10.5px;color:#8b949e;margin-bottom:2px;">2. Источник Б (Цель / Новое — что сравниваем с Базой А):</div>
+    <button type="button" class="picker-btn" onclick="openComparePicker('target')">
+      <span id="lblCompareTarget" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📁 Рабочая папка на телефоне</span>
+      <span style="color:#39c5cf;font-weight:bold;">▾ Выбрать</span>
+    </button>
 
     <button class="btn btn-cyan" onclick="runSelectedComparison()">
-      <span class="btn-main">🔍 Сравнить выбранные версии через Git</span>
-      <span class="btn-sub">Показать все коммиты, функции (+ / - / ~) и построчный Git Patch</span>
+      <span class="btn-main">🔍 Сравнить (А ➔ Б) до последнего символа</span>
+      <span class="btn-sub" id="subCompareBtn">Показать коммиты, функции (+ / - / ~) и полный Git Diff</span>
     </button>
 
     <!-- Панель готового отчёта об изменениях -->
@@ -260,23 +314,29 @@
   <div id="actionStatusBox" class="status-box"></div>
 </div>
 
-<!-- 2. ПАПКА КУДА СОХРАНЯТЬ APK И АРХИВЫ -->
+<!-- 2. ПАПКА КУДА СОХРАНЯТЬ APK И АРХИВЫ + УСТАНОВЩИК APK -->
 <div class="card">
-  <div class="card-title">💾 2. КУДА СОХРАНЯТЬ ГОТОВЫЕ APK И СКАЧАННЫЕ АРХИВЫ</div>
+  <div class="card-title">💾 2. СОХРАНЕНИЕ И УСТАНОВКА APK (32 ПОТОКА + MT INSTALLER)</div>
   <div style="display:flex;gap:6px;margin-bottom:8px;">
     <input type="text" id="saveDirInput" style="margin-bottom:0;flex:1;" oninput="updateButtonLabels()">
     <button class="btn btn-blue" style="width:auto;white-space:nowrap;" onclick="openBrowser('pick_save_dir')">📂 Папка сохранения</button>
   </div>
-  <button class="btn btn-gold" onclick="downloadLastGoodZip()">
-    <span class="btn-main" id="mainDlGoodZip">✅ Скачать с GitHub чистый .zip архив последней удачной сборки</span>
-    <span class="btn-sub" id="subDlGoodZip">Откуда: GitHub ➔ Куда: в папку /storage/emulated/0/Download</span>
-  </button>
+  <div class="stack-btns">
+    <button class="btn btn-gold" onclick="downloadLastGoodZip()">
+      <span class="btn-main" id="mainDlGoodZip">✅ Скачать с GitHub чистый .zip архив последней удачной сборки</span>
+      <span class="btn-sub" id="subDlGoodZip">Откуда: GitHub ➔ Куда: в папку /storage/emulated/0/Download</span>
+    </button>
+    <button class="btn btn-green" onclick="openBrowser('pick_apk_install')">
+      <span class="btn-main">📲 Выбрать и установить любой .apk файл из папки</span>
+      <span class="btn-sub">Проверка подписи как в MT Manager + авто-удаление несовместимой версии</span>
+    </button>
+  </div>
 </div>
 
 <!-- 3. ЖИВОЙ МОНИТОР СБОРКИ И ОШИБОК -->
 <div class="card">
   <div class="card-title">
-    <span>⚡ 3. СБОРКИ GITHUB ACTIONS И СКАЧИВАНИЕ APK</span>
+    <span>⚡ 3. СБОРКИ GITHUB ACTIONS (СКАЧАТЬ В 32 ПОТОКА И УСТАНОВИТЬ)</span>
     <button class="btn" style="width:auto;padding:4px 8px;font-size:11px;" onclick="loadRuns()">🔄 Обновить</button>
   </div>
 
@@ -292,12 +352,57 @@
   </div>
 
   <div style="font-size:11px;color:#8b949e;margin:8px 0 4px 0;">
-    История сборок (зелёная метка «📲 УСТАНОВЛЕНА СЕЙЧАС» показывает какая сборка стоит на телефоне):
+    История сборок (нажми «📲 Установить», чтобы скачать в 32 потока и сразу открыть установщик):
   </div>
   <div id="runsListContainer">⏳ Загрузка сборок...</div>
 </div>
 
-<!-- Модальное окно проводника папок и .zip файлов -->
+<!-- МОДАЛЬНОЕ ОКНО ВЫБОРА ИСТОЧНИКА ДЛЯ СРАВНЕНИЯ (А или Б) -->
+<div id="comparePickerModal" class="modal-bg">
+  <div class="modal-box" style="border-color:#39c5cf;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <b id="compareModalTitle" style="color:#76e3ea;font-size:13px;">🔬 Выбери источник для сравнения</b>
+      <button class="btn" style="width:auto;padding:3px 8px;" onclick="closeComparePicker()">✕</button>
+    </div>
+    <div id="compareOptionsList" style="max-height:68vh;overflow-y:auto;border:1px solid #30363d;border-radius:8px;background:#0d1117;"></div>
+  </div>
+</div>
+
+<!-- МОДАЛЬНОЕ ОКНО УСТАНОВЩИКА В СТИЛЕ MT MANAGER -->
+<div id="mtInstallModal" class="modal-bg">
+  <div class="modal-box" style="border-color:#3fb950;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <b style="color:#7ee787;font-size:14px;" id="mtAppNameTitle">📲 Установка APK</b>
+      <button class="btn" style="width:auto;padding:3px 8px;" onclick="closeMtInstaller()">✕</button>
+    </div>
+
+    <div id="mtInfoRows" style="background:#090d13;padding:8px 10px;border-radius:8px;border:1px solid #30363d;margin-bottom:8px;"></div>
+
+    <!-- Предупреждение о несовпадении подписей или понижении версии (как в MT Manager) -->
+    <div id="mtConflictWarnBox" style="display:none;background:#2d1117;border:1px solid #ff7b72;border-radius:9px;padding:10px;margin-bottom:8px;">
+      <div style="font-weight:bold;color:#ffa198;font-size:12px;margin-bottom:4px;" id="mtConflictHead">
+        ⚠️ Внимание: Подписи APK и приложения несовместимы!
+      </div>
+      <div style="font-size:11px;color:#e6edf3;margin-bottom:8px;" id="mtConflictDesc">
+        Удалить установленное приложение и сразу автоматически запустить установку этого APK?
+      </div>
+      <button class="btn btn-red" onclick="confirmMtUninstallAndInstall()">
+        🗑️ ОК: Удалить установленное и сразу установить этот APK
+      </button>
+    </div>
+
+    <div class="grid2">
+      <button class="btn btn-green" onclick="confirmMtDirectInstall()">
+        📲 Установить APK
+      </button>
+      <button class="btn" onclick="closeMtInstaller()">
+        Отмена
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Модальное окно проводника папок, .zip и .apk файлов -->
 <div id="fsModal" class="modal-bg">
   <div class="modal-box">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
@@ -327,6 +432,60 @@ let lastDiffShortCommit = '';
 let currentInstalledState = null;
 let allLoadedRuns = [];
 
+// Выбранные источники для двустороннего сравнения (А и Б)
+let compareBaseSpec = 'INSTALLED_NOW';
+let compareBaseLabel = '📲 Установленная сейчас на телефоне сборка';
+let compareTargetSpec = 'LOCAL_FOLDER';
+let compareTargetLabel = '📁 Рабочая папка на телефоне';
+let activeComparePickerSide = 'base';
+
+// Для MT Manager установщика
+let pendingMtApkPath = '';
+let pendingMtPkgName = '';
+
+// Опрос живого прогресс-бара
+let progressPollTimer = null;
+
+function startProgressPolling(initialTitle, initialDetail) {
+  const wrap = document.getElementById('liveProgressBanner');
+  if (wrap) {
+    wrap.style.display = 'block';
+    document.getElementById('progTitleTxt').textContent = initialTitle || '⏳ Выполнение...';
+    document.getElementById('progPctTxt').textContent = '2% • 0.0 сек';
+    document.getElementById('progBarFill').style.width = '2%';
+    document.getElementById('progDetailTxt').textContent = initialDetail || 'Запуск...';
+  }
+  if (progressPollTimer) clearInterval(progressPollTimer);
+  progressPollTimer = setInterval(async () => {
+    try {
+      const r = await fetch('/api/progress');
+      const d = await r.json();
+      if (d.status === 'ok' && d.progress) {
+        const p = d.progress;
+        if (p.active) {
+          if (wrap) wrap.style.display = 'block';
+          document.getElementById('progTitleTxt').textContent = p.title || '⏳ Выполнение...';
+          document.getElementById('progPctTxt').textContent = p.percent + '% • ' + (p.elapsed_sec || 0) + ' сек';
+          document.getElementById('progBarFill').style.width = p.percent + '%';
+          document.getElementById('progDetailTxt').textContent = p.detail || '';
+        }
+      }
+    } catch (e) {}
+  }, 240);
+}
+
+function stopProgressPolling() {
+  if (progressPollTimer) {
+    clearInterval(progressPollTimer);
+    progressPollTimer = null;
+  }
+  const wrap = document.getElementById('liveProgressBanner');
+  if (wrap) {
+    document.getElementById('progBarFill').style.width = '100%';
+    setTimeout(() => { wrap.style.display = 'none'; }, 650);
+  }
+}
+
 function shortPath(p) {
   if (!p) return 'не выбрано';
   return p.replace(/^\/storage\/emulated\/0\//, '');
@@ -335,7 +494,6 @@ function shortPath(p) {
 function formatBuildBadge(bnum, vtag, title) {
   let parts = [];
   if (bnum) parts.push('Сборка #' + bnum);
-  if (vtag) parts.push(vtag);
   let head = parts.join(' / ') || 'Последняя сборка';
   if (title) {
     let cleanTitle = title.length > 42 ? (title.substring(0, 42) + '...') : title;
@@ -357,74 +515,239 @@ function collectBridgeAppHints() {
   return hints;
 }
 
-function populateComparisonDropdowns(runs) {
-  const baseSel = document.getElementById('diffBaseSelect');
-  const targetSel = document.getElementById('diffTargetSelect');
-  const manualSel = document.getElementById('manualInstalledSelect');
-  if (!baseSel || !targetSel) return;
+// ==============================================================================
+// КАСТОМНЫЙ ДВУСТОРОННИЙ ВЫБОР ИСТОЧНИКОВ СРАВНЕНИЯ (А ↔ Б)
+// ==============================================================================
 
-  const prevBase = baseSel.value;
-  const prevTarget = targetSel.value;
+function resolveEffectiveCompareSpec(spec) {
+  const srcP = shortPath(document.getElementById('sourceFolderInput').value.trim() || '/storage/emulated/0/scripts/JennyPlayer');
+  const zipP = shortPath(document.getElementById('selectedZipPath').value.trim());
   const instBnum = (currentInstalledState && currentInstalledState.player) ? currentInstalledState.player.build_number : null;
 
-  let baseHtml = '';
-  let manualHtml = '<option value="">— Выбери какая сборка сейчас установлена —</option>';
-
-  for (let i = 0; i < runs.length; i++) {
-    const r = runs[i];
-    const vt = '';
-    const isInst = (instBnum && r.run_number === instBnum);
-    const instPrefix = isInst ? '📲 [УСТАНОВЛЕНА СЕЙЧАС] ' : '';
-    const shortTitle = (r.title || '').length > 36 ? (r.title.substring(0, 36) + '...') : (r.title || '');
-    const lbl = instPrefix + 'Сборка #' + r.run_number + vt + ' (ID: ' + r.head_sha + ') — ' + shortTitle;
-    baseHtml += '<option value="' + r.full_sha + '" data-label="Сборка #' + r.run_number + vt + ' (ID: ' + r.head_sha + ')">' + lbl + '</option>';
-    manualHtml += '<option value="' + r.run_number + '"' + (isInst ? ' selected' : '') + '>Сборка #' + r.run_number + vt + ' — ' + shortTitle + '</option>';
+  if (spec === 'LOCAL_FOLDER') {
+    return { apiSpec: 'LOCAL_FOLDER', label: '📁 Рабочая папка (' + srcP + ')' };
   }
-  baseSel.innerHTML = baseHtml;
-  if (manualSel) manualSel.innerHTML = manualHtml;
+  if (spec === 'LOCAL_ZIP') {
+    return { apiSpec: 'LOCAL_ZIP', label: '📦 Выбранный .zip (' + zipP + ')' };
+  }
+  if (spec === 'INSTALLED_NOW') {
+    if (instBnum) {
+      const found = allLoadedRuns.find(r => r.run_number === instBnum);
+      if (found && found.full_sha) {
+        return {
+          apiSpec: 'GH:' + found.full_sha,
+          label: '📲 Установлена сейчас: Сборка #' + found.run_number + ' (ID: ' + found.head_sha + ')'
+        };
+      }
+    }
+    if (allLoadedRuns.length > 0) {
+      const top = allLoadedRuns[0];
+      return {
+        apiSpec: 'GH:' + top.full_sha,
+        label: '☁️ GitHub: Сборка #' + top.run_number + ' (ID: ' + top.head_sha + ')'
+      };
+    }
+    return { apiSpec: 'GH:', label: '☁️ Последняя сборка на GitHub' };
+  }
+  if (spec.indexOf('GH:') === 0) {
+    const sha = spec.substring(3);
+    const found = allLoadedRuns.find(r => r.full_sha === sha || r.head_sha === sha.substring(0, 7));
+    if (found) {
+      const isInst = (instBnum && found.run_number === instBnum);
+      const pref = isInst ? '📲 [УСТАНОВЛЕНА] ' : '☁️ GitHub: ';
+      return {
+        apiSpec: 'GH:' + found.full_sha,
+        label: pref + 'Сборка #' + found.run_number + ' (ID: ' + found.head_sha + ') — ' + (found.title || '').substring(0, 28)
+      };
+    }
+    return { apiSpec: spec, label: '☁️ GitHub коммит ' + sha.substring(0, 7) };
+  }
+  return { apiSpec: 'LOCAL_FOLDER', label: '📁 Рабочая папка (' + srcP + ')' };
+}
+
+function refreshCompareLabelsUi() {
+  const aInfo = resolveEffectiveCompareSpec(compareBaseSpec);
+  const bInfo = resolveEffectiveCompareSpec(compareTargetSpec);
+  compareBaseLabel = aInfo.label;
+  compareTargetLabel = bInfo.label;
+
+  const baseEl = document.getElementById('lblCompareBase');
+  const targEl = document.getElementById('lblCompareTarget');
+  const subBtn = document.getElementById('subCompareBtn');
+  if (baseEl) baseEl.textContent = aInfo.label;
+  if (targEl) targEl.textContent = bInfo.label;
+  if (subBtn) subBtn.textContent = 'База А ➔ Цель Б (показать все изменения в Б относительно А)';
+}
+
+function swapComparisonSides() {
+  const tmpSpec = compareBaseSpec;
+  compareBaseSpec = compareTargetSpec;
+  compareTargetSpec = tmpSpec;
+  refreshCompareLabelsUi();
+  showStatus('⇅ Направление сравнения перевёрнуто: теперь сравниваем «' + compareBaseLabel + '» ➔ «' + compareTargetLabel + '»', false);
+}
+
+function openComparePicker(side) {
+  activeComparePickerSide = side;
+  const modal = document.getElementById('comparePickerModal');
+  const titleEl = document.getElementById('compareModalTitle');
+  const listEl = document.getElementById('compareOptionsList');
+  if (!modal || !listEl) return;
+
+  titleEl.textContent = (side === 'base')
+    ? '1. Выбери Источник А (База / Старое)'
+    : '2. Выбери Источник Б (Цель / Новое)';
 
   const srcP = shortPath(document.getElementById('sourceFolderInput').value.trim() || '/storage/emulated/0/scripts/JennyPlayer');
   const zipP = shortPath(document.getElementById('selectedZipPath').value.trim());
+  const instBnum = (currentInstalledState && currentInstalledState.player) ? currentInstalledState.player.build_number : null;
 
-  let targetHtml = '';
-  targetHtml += '<option value="LOCAL_FOLDER">📁 Рабочая папка на телефоне (' + srcP + ')</option>';
-  targetHtml += '<option value="LOCAL_ZIP">📦 Выбранный .zip архив (' + zipP + ')</option>';
-  for (let j = 0; j < runs.length; j++) {
-    const r = runs[j];
-    const vt = '';
-    const shortTitle = (r.title || '').length > 36 ? (r.title.substring(0, 36) + '...') : (r.title || '');
-    const lbl = '☁️ GitHub: Сборка #' + r.run_number + vt + ' (ID: ' + r.head_sha + ') — ' + shortTitle;
-    targetHtml += '<option value="GH:' + r.full_sha + '" data-label="Сборка #' + r.run_number + vt + ' (ID: ' + r.head_sha + ')">' + lbl + '</option>';
-  }
-  targetSel.innerHTML = targetHtml;
+  let html = '';
+  html += '<div style="padding:6px 8px;background:#161b22;color:#76e3ea;font-size:10.5px;font-weight:bold;">📱 ЛОКАЛЬНЫЕ ПАПКИ, АРХИВЫ И УСТАНОВЛЕННАЯ ВЕРСИЯ:</div>';
 
-  if (prevBase && Array.from(baseSel.options).some(o => o.value === prevBase)) {
-    baseSel.value = prevBase;
-  } else if (instBnum) {
-    const foundInst = runs.find(r => r.run_number === instBnum);
-    if (foundInst) baseSel.value = foundInst.full_sha;
+  // 1. Рабочая папка
+  html += '<div class="dir-item" onclick="selectCompareOption(\'LOCAL_FOLDER\')">';
+  html += '  <div><b style="color:#7ee787;">📁 Рабочая папка проекта на телефоне</b><div style="font-size:10px;color:#8b949e;">Путь: ' + srcP + '</div></div>';
+  html += '  <span style="color:#39c5cf;">Выбрать ➔</span>';
+  html += '</div>';
+
+  // 2. Выбранный .zip архив
+  html += '<div class="dir-item" onclick="selectCompareOption(\'LOCAL_ZIP\')">';
+  html += '  <div><b style="color:#f2cc60;">📦 Выбранный .zip архив на телефоне</b><div style="font-size:10px;color:#8b949e;">Файл: ' + zipP + '</div></div>';
+  html += '  <span style="color:#39c5cf;">Выбрать ➔</span>';
+  html += '</div>';
+
+  // 3. Текущая установленная сборка на телефоне
+  const instDesc = instBnum ? ('Сейчас на телефоне стоит Сборка #' + instBnum) : 'Авто-выбор установленной сборки';
+  html += '<div class="dir-item" onclick="selectCompareOption(\'INSTALLED_NOW\')">';
+  html += '  <div><b style="color:#d2a8ff;">📲 Установленная сейчас на телефоне сборка (с GitHub)</b><div style="font-size:10px;color:#8b949e;">' + instDesc + '</div></div>';
+  html += '  <span style="color:#39c5cf;">Выбрать ➔</span>';
+  html += '</div>';
+
+  // 4. Все сборки из истории GitHub Actions
+  html += '<div style="padding:6px 8px;background:#161b22;color:#79c0ff;font-size:10.5px;font-weight:bold;">☁️ ИСТОРИЯ СБОРОК НА GITHUB (' + allLoadedRuns.length + '):</div>';
+  for (let i = 0; i < allLoadedRuns.length; i++) {
+    const r = allLoadedRuns[i];
+    const isInst = (instBnum && r.run_number === instBnum);
+    const badge = isInst ? '<span class="inst-badge">📲 УСТАНОВЛЕНА СЕЙЧАС</span>' : '';
+    const icon = (r.conclusion === 'success') ? '✅' : (r.conclusion === 'failure' ? '❌' : '⏳');
+    html += '<div class="dir-item" onclick="selectCompareOption(\'GH:' + r.full_sha + '\')">';
+    html += '  <div style="flex:1;min-width:0;padding-right:6px;">';
+    html += '    <div style="font-weight:bold;color:#e6edf3;font-size:12px;">' + icon + ' Сборка #' + r.run_number + badge + '</div>';
+    html += '    <div style="font-size:10.5px;color:#c9d1d9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">«' + (r.title || '') + '»</div>';
+    html += '    <div style="font-size:10px;color:#8b949e;">' + r.created_at + ' • ID коммита: ' + r.head_sha + '</div>';
+    html += '  </div>';
+    html += '  <span style="color:#39c5cf;white-space:nowrap;">Выбрать ➔</span>';
+    html += '</div>';
   }
-  if (prevTarget && Array.from(targetSel.options).some(o => o.value === prevTarget)) {
-    targetSel.value = prevTarget;
-  }
+
+  listEl.innerHTML = html;
+  modal.style.display = 'flex';
 }
 
-async function setManualInstalledBuild(bnumStr) {
-  if (!bnumStr) return;
+function closeComparePicker() {
+  const modal = document.getElementById('comparePickerModal');
+  if (modal) modal.style.display = 'none';
+}
+
+function selectCompareOption(spec) {
+  if (activeComparePickerSide === 'base') {
+    compareBaseSpec = spec;
+  } else {
+    compareTargetSpec = spec;
+  }
+  refreshCompareLabelsUi();
+  closeComparePicker();
+}
+
+// ==============================================================================
+// УСТАНОВЩИК APK В СТИЛЕ MT MANAGER (С АВТО-УДАЛЕНИЕМ ПРИ КОНФЛИКТЕ ПОДПИСЕЙ)
+// ==============================================================================
+
+function openMtInstallerForApk(apkPath) {
+  if (!apkPath) return;
+  pendingMtApkPath = apkPath;
+  const modal = document.getElementById('mtInstallModal');
+  const rowsEl = document.getElementById('mtInfoRows');
+  const warnBox = document.getElementById('mtConflictWarnBox');
+  const warnHead = document.getElementById('mtConflictHead');
+  const warnDesc = document.getElementById('mtConflictDesc');
+
+  let info = null;
   try {
-    const hints = collectBridgeAppHints();
-    const r = await fetch('/api/installed_info', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({bridge_hints: hints, manual_installed_build: parseInt(bnumStr, 10)})
-    });
-    const d = await r.json();
-    if (d.status === 'ok' && d.installed) {
-      renderInstalledStatus(d.installed);
-      loadRuns();
+    if (window.AndroidBridge && typeof window.AndroidBridge.inspectApkFileJson === 'function') {
+      const raw = window.AndroidBridge.inspectApkFileJson(apkPath);
+      if (raw) info = JSON.parse(raw);
     }
   } catch (e) {}
+
+  if (!info || info.status !== 'ok') {
+    // Если мост недоступен, вызываем прямую установку
+    if (window.AndroidBridge && typeof window.AndroidBridge.installApkDirect === 'function') {
+      window.AndroidBridge.installApkDirect(apkPath);
+    } else {
+      showStatus('❌ Ошибка чтения заголовка APK: ' + ((info && info.error) || apkPath), true);
+    }
+    return;
+  }
+
+  pendingMtPkgName = info.package || '';
+  document.getElementById('mtAppNameTitle').textContent = '📲 ' + (info.appName || 'Установка APK');
+
+  let html = '';
+  html += '<div class="mt-row"><span class="mt-lbl">Файл:</span><span class="mt-val">' + info.fileName + ' (' + info.sizeMb + ' МБ)</span></div>';
+  html += '<div class="mt-row"><span class="mt-lbl">Название пакета:</span><span class="mt-val">' + info.package + '</span></div>';
+  html += '<div class="mt-row"><span class="mt-lbl">Версия в APK:</span><span class="mt-val" style="color:#7ee787;">' + (info.apkVersionName || '—') + ' [код: ' + info.apkVersionCode + ']</span></div>';
+
+  if (info.alreadyInstalled) {
+    html += '<div class="mt-row"><span class="mt-lbl">Установлена сейчас:</span><span class="mt-val" style="color:#79c0ff;">' + (info.installedVersionName || '—') + ' [код: ' + info.installedVersionCode + ']</span></div>';
+    const sigStat = info.signatureMismatch ? '<span style="color:#ff7b72;">❌ Разные подписи!</span>' : '<span style="color:#3fb950;">✅ Совпадает</span>';
+    html += '<div class="mt-row" style="border-bottom:none;"><span class="mt-lbl">Подпись APK:</span><span class="mt-val">' + sigStat + '</span></div>';
+  } else {
+    html += '<div class="mt-row" style="border-bottom:none;"><span class="mt-lbl">Статус на телефоне:</span><span class="mt-val">Новое приложение (не установлено)</span></div>';
+  }
+  rowsEl.innerHTML = html;
+
+  if (info.signatureMismatch || info.isDowngrade) {
+    warnBox.style.display = 'block';
+    if (info.signatureMismatch) {
+      warnHead.textContent = '⚠️ Внимание: Подписи APK и установленного приложения несовместимы!';
+      warnDesc.textContent = 'Android не даст поставить APK с другой подписью поверх старого. Удалить установленное приложение и сразу автоматически запустить установку этого APK?';
+    } else {
+      warnHead.textContent = '⚠️ Внимание: Понижение версии (код ' + info.apkVersionCode + ' поверх ' + info.installedVersionCode + ')!';
+      warnDesc.textContent = 'Ты ставишь более старую сборку поверх новой. Удалить текущую версию и сразу автоматически установить выбранную?';
+    }
+  } else {
+    warnBox.style.display = 'none';
+  }
+
+  modal.style.display = 'flex';
 }
+
+function closeMtInstaller() {
+  const modal = document.getElementById('mtInstallModal');
+  if (modal) modal.style.display = 'none';
+}
+
+function confirmMtDirectInstall() {
+  closeMtInstaller();
+  if (window.AndroidBridge && typeof window.AndroidBridge.installApkDirect === 'function') {
+    window.AndroidBridge.installApkDirect(pendingMtApkPath);
+  }
+}
+
+function confirmMtUninstallAndInstall() {
+  closeMtInstaller();
+  showStatus('🗑️ Подтверди удаление старой версии — сразу после удаления автоматически откроется установка нового APK!', false);
+  if (window.AndroidBridge && typeof window.AndroidBridge.uninstallAndInstallApk === 'function') {
+    window.AndroidBridge.uninstallAndInstallApk(pendingMtPkgName, pendingMtApkPath);
+  }
+}
+
+window.onUninstallCompletedV170 = function() {
+  showStatus('✅ Старая версия удалена! Запускаю установку нового APK...', false);
+  setTimeout(refreshInstalledVersion, 2000);
+};
 
 function renderInstalledStatus(inst) {
   try {
@@ -463,6 +786,7 @@ function renderInstalledStatus(inst) {
       if (b.updated_at) bTxt += ' (обновлён: ' + b.updated_at + ')';
       bMain.textContent = bTxt;
     }
+    refreshCompareLabelsUi();
   } catch (e) {}
 }
 
@@ -491,8 +815,7 @@ function updateButtonLabels() {
 
   let ghGoodDesc = 'GitHub (' + repo + ')';
   if (latestGoodBuildInfo && latestGoodBuildInfo.run_number) {
-    const vt = '';
-    ghGoodDesc = 'GitHub: Сборка #' + latestGoodBuildInfo.run_number + vt;
+    ghGoodDesc = 'GitHub: Сборка #' + latestGoodBuildInfo.run_number;
   }
 
   document.getElementById('subPushZip').textContent =
@@ -514,76 +837,58 @@ function updateButtonLabels() {
     'Откуда: ' + ghGoodDesc + ' ➔ В папку: ' + saveP;
 
   if (latestGoodBuildInfo && latestGoodBuildInfo.run_number) {
-    const vt = '';
     document.getElementById('mainPullFolder').textContent =
-      '⬇️ ИМПОРТ: Скачать Сборку #' + latestGoodBuildInfo.run_number + vt + ' с GitHub в рабочую папку';
+      '⬇️ ИМПОРТ: Скачать Сборку #' + latestGoodBuildInfo.run_number + ' с GitHub в рабочую папку';
     document.getElementById('mainDlGoodZip').textContent =
-      '✅ Скачать чистый .zip архив Сборки #' + latestGoodBuildInfo.run_number + vt + ' с GitHub';
+      '✅ Скачать чистый .zip архив Сборки #' + latestGoodBuildInfo.run_number + ' с GitHub';
   }
-
+  refreshCompareLabelsUi();
 }
 
 async function runSelectedComparison() {
-  const baseSel = document.getElementById('diffBaseSelect');
-  const targetSel = document.getElementById('diffTargetSelect');
-  const baseSha = baseSel ? baseSel.value : '';
-  const baseOpt = baseSel && baseSel.selectedOptions && baseSel.selectedOptions[0];
-  const baseLabel = baseOpt ? (baseOpt.getAttribute('data-label') || baseOpt.textContent) : '';
-
-  const targetVal = targetSel ? targetSel.value : 'LOCAL_FOLDER';
-  const targetOpt = targetSel && targetSel.selectedOptions && targetSel.selectedOptions[0];
-  const targetLabel = targetOpt ? (targetOpt.getAttribute('data-label') || targetOpt.textContent) : '';
-
+  const aInfo = resolveEffectiveCompareSpec(compareBaseSpec);
+  const bInfo = resolveEffectiveCompareSpec(compareTargetSpec);
   const fp = document.getElementById('sourceFolderInput').value.trim();
   const zp = document.getElementById('selectedZipPath').value.trim();
 
-  let payload = {
-    base_sha: baseSha,
-    base_label: baseLabel,
-    folder_path: fp,
-    zip_path: zp
-  };
-
-  if (targetVal === 'LOCAL_FOLDER') {
+  if (aInfo.apiSpec === 'LOCAL_FOLDER' || bInfo.apiSpec === 'LOCAL_FOLDER' || aInfo.apiSpec === 'LOCAL_ZIP' || bInfo.apiSpec === 'LOCAL_ZIP') {
     if (!checkAndroidStorageState()) {
       requestAndroidStoragePerm();
       return;
     }
-    payload.target_type = 'folder';
-  } else if (targetVal === 'LOCAL_ZIP') {
-    if (!checkAndroidStorageState()) {
-      requestAndroidStoragePerm();
-      return;
-    }
-    if (!zp) {
-      showStatus('⚠️ Сначала выбери .zip архив через кнопку «📂 Выбрать .zip»', true);
-      return;
-    }
-    payload.target_type = 'zip';
-  } else if (targetVal.indexOf('GH:') === 0) {
-    payload.target_type = 'github_run';
-    payload.target_sha = targetVal.substring(3);
-    payload.target_label = targetLabel;
+  }
+  if ((aInfo.apiSpec === 'LOCAL_ZIP' || bInfo.apiSpec === 'LOCAL_ZIP') && !zp) {
+    showStatus('⚠️ Для сравнения с .zip сначала выбери файл архива через кнопку «📂 Выбрать .zip»', true);
+    return;
   }
 
   const panel = document.getElementById('diffReportPanel');
   const pre = document.getElementById('diffReportPre');
   panel.style.display = 'block';
-  pre.textContent = '⏳ Запрашиваю Git-историю и сверяю все функции и строки кода...';
+  pre.textContent = '⏳ Сравниваю «' + aInfo.label + '» ➔ «' + bInfo.label + '»...';
+  startProgressPolling('🔬 Git-сравнение (А ➔ Б)', 'Сверка дерева файлов и функций...');
 
   try {
     const r = await fetch('/api/compare', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload)
+      body: JSON.stringify({
+        base_spec: aInfo.apiSpec,
+        target_spec: bInfo.apiSpec,
+        base_label: aInfo.label,
+        target_label: bInfo.label,
+        folder_path: fp,
+        zip_path: zp
+      })
     });
     const d = await r.json();
+    stopProgressPolling();
     if (d.status === 'ok') {
       lastDiffReportText = d.report_text || '';
       lastDiffShortCommit = d.short_commit_msg || '';
       pre.textContent = lastDiffReportText;
       document.getElementById('diffTitleLbl').textContent =
-        '📊 Итог сравнения: изменено ' + d.modified_count + ', новых ' + d.added_count + ', удалено ' + d.removed_count;
+        '📊 Итог (А ➔ Б): изменено ' + d.modified_count + ', новых ' + d.added_count + ', удалено ' + d.removed_count;
       if (!document.getElementById('commitMsgInput').value.trim() && lastDiffShortCommit && d.has_changes) {
         document.getElementById('commitMsgInput').value = lastDiffShortCommit;
       }
@@ -591,6 +896,7 @@ async function runSelectedComparison() {
       pre.textContent = '❌ Ошибка сравнения: ' + d.error;
     }
   } catch (e) {
+    stopProgressPolling();
     pre.textContent = '❌ Ошибка сети: ' + e;
   }
 }
@@ -624,9 +930,9 @@ function copyDiffReport() {
 function applyShortDiffToCommitMsg() {
   if (lastDiffShortCommit) {
     document.getElementById('commitMsgInput').value = lastDiffShortCommit;
-    showStatus('✅ Краткая сводка подставлена в поле «Описание новой сборки»!', false);
+    showStatus('✅ Краткая сводка (А ➔ Б) подставлена в поле «Описание новой сборки»!', false);
   } else {
-    showStatus('ℹ️ Для сравнения двух уже готовых сборок GitHub сводка коммита не требуется.', false);
+    showStatus('ℹ️ Отличий между выбранными источниками А и Б нет.', false);
   }
 }
 
@@ -765,6 +1071,7 @@ async function pushSelectedZipPath() {
     return;
   }
   showStatus('⏳ Экспорт: читаю архив ' + zp + ' и отправляю в GitHub (' + repo + ')...', false);
+  startProgressPolling('📤 Отправка .zip на GitHub', 'Подготовка архива...');
   try {
     const r = await fetch('/api/push_local_zip', {
       method: 'POST',
@@ -772,6 +1079,7 @@ async function pushSelectedZipPath() {
       body: JSON.stringify({zip_path: zp, message: msg})
     });
     const d = await r.json();
+    stopProgressPolling();
     if (d.status === 'ok') {
       showStatus(
         '✅ Архив отправлен в GitHub (' + repo + ')!\n' +
@@ -786,6 +1094,7 @@ async function pushSelectedZipPath() {
       showStatus('❌ Ошибка: ' + d.error, true);
     }
   } catch (e) {
+    stopProgressPolling();
     showStatus('❌ Ошибка сети: ' + e, true);
   }
 }
@@ -796,6 +1105,7 @@ function pushSystemFileZip(inputEl) {
   const msg = document.getElementById('commitMsgInput').value.trim();
   const repo = document.getElementById('cfgRepo').value.trim();
   showStatus('⏳ Читаю ' + file.name + ' и отправляю в GitHub (' + repo + ')...', false);
+  startProgressPolling('📤 Отправка ' + file.name, 'Чтение файла в память...');
   const reader = new FileReader();
   reader.onload = async function() {
     const base64Data = reader.result.split(',')[1];
@@ -806,6 +1116,7 @@ function pushSystemFileZip(inputEl) {
         body: JSON.stringify({filename: file.name, zip_base64: base64Data, message: msg})
       });
       const d = await r.json();
+      stopProgressPolling();
       if (d.status === 'ok') {
         showStatus(
           '✅ Архив ' + file.name + ' отправлен в GitHub (' + repo + ')!\n' +
@@ -820,6 +1131,7 @@ function pushSystemFileZip(inputEl) {
         showStatus('❌ Ошибка: ' + d.error, true);
       }
     } catch (e) {
+      stopProgressPolling();
       showStatus('❌ Ошибка: ' + e, true);
     }
   };
@@ -835,6 +1147,7 @@ async function pushLocalFolder() {
   const msg = document.getElementById('commitMsgInput').value.trim();
   const repo = document.getElementById('cfgRepo').value.trim();
   showStatus('⏳ Экспорт: отправляю файлы из папки ' + fp + ' в GitHub (' + repo + ')...', false);
+  startProgressPolling('📤 Экспорт папки на GitHub', 'Сканирование рабочей папки...');
   try {
     const r = await fetch('/api/push_folder', {
       method: 'POST',
@@ -842,6 +1155,7 @@ async function pushLocalFolder() {
       body: JSON.stringify({folder_path: fp, message: msg})
     });
     const d = await r.json();
+    stopProgressPolling();
     if (d.status === 'ok') {
       showStatus(
         '✅ Экспорт папки завершён!\n' +
@@ -858,6 +1172,7 @@ async function pushLocalFolder() {
       showStatus('❌ Ошибка: ' + d.error, true);
     }
   } catch (e) {
+    stopProgressPolling();
     showStatus('❌ Ошибка: ' + e, true);
   }
 }
@@ -869,6 +1184,7 @@ async function pullFromGithubToFolder() {
   }
   const fp = document.getElementById('sourceFolderInput').value.trim();
   showStatus('⏳ Импорт: скачиваю последнюю удачную сборку с GitHub и распаковываю в папку ' + fp + '...', false);
+  startProgressPolling('⬇️ Импорт с GitHub в папку', 'Скачивание архива сборки...');
   try {
     const r = await fetch('/api/pull_to_folder', {
       method: 'POST',
@@ -876,6 +1192,7 @@ async function pullFromGithubToFolder() {
       body: JSON.stringify({folder_path: fp})
     });
     const d = await r.json();
+    stopProgressPolling();
     if (d.status === 'ok') {
       showStatus(
         '✅ Импорт с GitHub в рабочую папку завершён!\n' +
@@ -888,6 +1205,7 @@ async function pullFromGithubToFolder() {
       showStatus('❌ Ошибка импорта: ' + d.error, true);
     }
   } catch (e) {
+    stopProgressPolling();
     showStatus('❌ Ошибка: ' + e, true);
   }
 }
@@ -904,6 +1222,7 @@ async function unpackSelectedZipToFolder() {
     return;
   }
   showStatus('⏳ Распаковываю архив ' + zp + ' в рабочую папку ' + fp + '...', false);
+  startProgressPolling('📥 Распаковка .zip в папку', 'Распаковка файлов...');
   try {
     const r = await fetch('/api/unpack_zip_to_folder', {
       method: 'POST',
@@ -911,6 +1230,7 @@ async function unpackSelectedZipToFolder() {
       body: JSON.stringify({zip_path: zp, folder_path: fp})
     });
     const d = await r.json();
+    stopProgressPolling();
     if (d.status === 'ok') {
       showStatus(
         '✅ Архив успешно распакован в рабочую папку!\n' +
@@ -923,6 +1243,7 @@ async function unpackSelectedZipToFolder() {
       showStatus('❌ Ошибка распаковки: ' + d.error, true);
     }
   } catch (e) {
+    stopProgressPolling();
     showStatus('❌ Ошибка: ' + e, true);
   }
 }
@@ -935,6 +1256,7 @@ async function packLocalFolderToZip() {
   const fp = document.getElementById('sourceFolderInput').value.trim();
   const sd = document.getElementById('saveDirInput').value.trim();
   showStatus('⏳ Упаковываю рабочую папку ' + fp + ' в чистый .zip архив...', false);
+  startProgressPolling('📦 Упаковка папки в .zip', 'Сжатие файлов проекта...');
   try {
     const r = await fetch('/api/pack_local_folder_zip', {
       method: 'POST',
@@ -942,6 +1264,7 @@ async function packLocalFolderToZip() {
       body: JSON.stringify({folder_path: fp, save_dir: sd})
     });
     const d = await r.json();
+    stopProgressPolling();
     if (d.status === 'ok') {
       document.getElementById('selectedZipPath').value = d.zip_path;
       updateButtonLabels();
@@ -955,6 +1278,7 @@ async function packLocalFolderToZip() {
       showStatus('❌ Ошибка: ' + d.error, true);
     }
   } catch (e) {
+    stopProgressPolling();
     showStatus('❌ Ошибка: ' + e, true);
   }
 }
@@ -966,6 +1290,7 @@ async function downloadLastGoodZip() {
   }
   const sd = document.getElementById('saveDirInput').value.trim();
   showStatus('⏳ Скачиваю с GitHub чистый .zip архив последней удачной сборки в папку ' + sd + '...', false);
+  startProgressPolling('📦 Скачивание .zip с GitHub', 'Загрузка архива в 32 потока...');
   try {
     const r = await fetch('/api/download_last_good_zip', {
       method: 'POST',
@@ -973,6 +1298,7 @@ async function downloadLastGoodZip() {
       body: JSON.stringify({save_dir: sd})
     });
     const d = await r.json();
+    stopProgressPolling();
     if (d.status === 'ok') {
       document.getElementById('selectedZipPath').value = d.zip_path;
       updateButtonLabels();
@@ -986,37 +1312,41 @@ async function downloadLastGoodZip() {
       showStatus('❌ Ошибка: ' + d.error, true);
     }
   } catch (e) {
+    stopProgressPolling();
     showStatus('❌ Ошибка: ' + e, true);
   }
 }
 
-async function downloadRunApk(runId, runNum, verTag) {
+async function downloadRunApk(runId, runNum, autoInstallAfter) {
   if (!checkAndroidStorageState()) {
     requestAndroidStoragePerm();
     return;
   }
   const sd = document.getElementById('saveDirInput').value.trim();
-  const verLabel = verTag ? (' (' + verTag + ')') : '';
-  showStatus('⏳ Скачиваю готовый APK Сборки #' + runNum + verLabel + ' в папку ' + sd + '...', false);
+  showStatus('⏳ Качаю в 32 потока готовый APK Сборки #' + runNum + ' в папку ' + sd + '...', false);
+  startProgressPolling('📥 Скачивание APK #' + runNum + ' (32 потока)', 'Подключение к CDN GitHub...');
   try {
     const r = await fetch('/api/download_apk', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({run_id: runId, run_number: runNum, version_tag: verTag || '', save_dir: sd})
+      body: JSON.stringify({run_id: runId, run_number: runNum, save_dir: sd})
     });
     const d = await r.json();
+    stopProgressPolling();
     if (d.status === 'ok') {
       showStatus(
-        '✅ Готовый APK успешно скачан!\n' +
-        '• Сборка: #' + runNum + verLabel + '\n' +
+        '✅ Готовый APK #' + runNum + ' скачан в 32 потока!\n' +
         '• Файл сохранён в: ' + d.apk_path + ' (' + d.size_mb + ' МБ)',
         false
       );
-      refreshInstalledVersion();
+      if (autoInstallAfter) {
+        openMtInstallerForApk(d.apk_path);
+      }
     } else {
       showStatus('❌ Ошибка скачивания APK: ' + d.error, true);
     }
   } catch (e) {
+    stopProgressPolling();
     showStatus('❌ Ошибка: ' + e, true);
   }
 }
@@ -1036,19 +1366,17 @@ async function loadRuns() {
     if (d.latest_good) {
       latestGoodBuildInfo = d.latest_good;
     }
+    const runs = d.runs || [];
+    allLoadedRuns = runs;
+
     if (d.installed) {
       renderInstalledStatus(d.installed);
     }
-
-    const runs = d.runs || [];
-    allLoadedRuns = runs;
-    populateComparisonDropdowns(runs);
     updateButtonLabels();
 
     const instPlayerBuild = (currentInstalledState && currentInstalledState.player) ? currentInstalledState.player.build_number : null;
 
     const listEl = document.getElementById('runsListContainer');
-    const saveFolderShort = shortPath(document.getElementById('saveDirInput').value.trim() || '/storage/emulated/0/Download');
     let html = '';
     for (let i = 0; i < runs.length; i++) {
       const item = runs[i];
@@ -1061,18 +1389,19 @@ async function loadRuns() {
       const isSel = (d.active && d.active.run_id === item.id);
       const isInstalledNow = (instPlayerBuild && item.run_number === instPlayerBuild);
       const borderCol = isInstalledNow ? '#3fb950' : (isSel ? '#a371f7' : '#21262d');
-      const vBadge = '';
       const instBadgeHtml = isInstalledNow ? '<span class="inst-badge">📲 УСТАНОВЛЕНА СЕЙЧАС</span>' : '';
-      const safeVer = (item.version_tag || '').replace(/'/g, '');
       html += '<div class="run-item" style="border-color:' + borderCol + ';" onclick="selectRun(' + item.id + ')">';
       html += '  <div style="flex:1;min-width:0;">';
-      html += '    <div style="font-weight:bold;color:' + color + ';font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + icon + ' Сборка #' + item.run_number + vBadge + instBadgeHtml + ' — ' + item.title + '</div>';
-      html += '    <div style="font-size:10px;color:#8b949e;">Дата: ' + item.created_at + ' • (ID коммита в Git: ' + item.head_sha + ')</div>';
+      html += '    <div style="font-weight:bold;color:' + color + ';font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + icon + ' Сборка #' + item.run_number + instBadgeHtml + ' — ' + item.title + '</div>';
+      html += '    <div style="font-size:10px;color:#8b949e;">Дата: ' + item.created_at + ' • ID коммита: ' + item.head_sha + '</div>';
       html += '  </div>';
       if (item.conclusion === 'success') {
-        html += '  <button class="btn btn-green" style="width:auto;padding:6px 9px;font-size:11px;white-space:nowrap;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', \'' + safeVer + '\')">📥 APK #' + item.run_number + '<span style="display:block;font-size:9px;font-weight:normal;">в ' + saveFolderShort + '</span></button>';
+        html += '  <div style="display:flex;gap:4px;flex-shrink:0;">';
+        html += '    <button class="btn btn-blue" style="width:auto;padding:6px 8px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', false)">📥 APK</button>';
+        html += '    <button class="btn btn-green" style="width:auto;padding:6px 8px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', true)">📲 Установить</button>';
+        html += '  </div>';
       } else if (item.conclusion === 'failure') {
-        html += '  <button class="btn btn-red" style="width:auto;padding:6px 9px;font-size:11px;white-space:nowrap;" onclick="event.stopPropagation();selectRun(' + item.id + ')">🔍 Ошибка<span style="display:block;font-size:9px;font-weight:normal;">Сборка #' + item.run_number + '</span></button>';
+        html += '  <button class="btn btn-red" style="width:auto;padding:6px 9px;font-size:10.5px;white-space:nowrap;" onclick="event.stopPropagation();selectRun(' + item.id + ')">🔍 Ошибка #' + item.run_number + '</button>';
       }
       html += '</div>';
     }
@@ -1178,6 +1507,9 @@ function openBrowser(mode) {
   if (mode === 'pick_zip') {
     titleEl.textContent = '📂 Выбери .zip архив';
     confirmBtn.style.display = 'none';
+  } else if (mode === 'pick_apk_install') {
+    titleEl.textContent = '📲 Выбери .apk файл для установки';
+    confirmBtn.style.display = 'none';
   } else if (mode === 'pick_source_dir') {
     titleEl.textContent = '📂 Выбери рабочую папку проекта';
     confirmBtn.style.display = 'inline-block';
@@ -1210,6 +1542,14 @@ async function loadBrowserDir(dirPath) {
         html += '  <span>📦 ' + z.name + '</span><span style="font-size:10px;color:#8b949e;">' + z.mb + ' МБ</span>';
         html += '</div>';
       }
+    } else if (currentBrowserMode === 'pick_apk_install') {
+      const apks = d.apks || [];
+      for (let k = 0; k < apks.length; k++) {
+        const a = apks[k];
+        html += '<div class="dir-item" style="color:#7ee787;font-weight:bold;" onclick="selectApkFromBrowser(\'' + a.path.replace(/'/g, "\\'") + '\')">';
+        html += '  <span>📲 ' + a.name + '</span><span style="font-size:10px;color:#8b949e;">' + a.mb + ' МБ</span>';
+        html += '</div>';
+      }
     }
     const dirs = d.dirs || [];
     for (let j = 0; j < dirs.length; j++) {
@@ -1231,6 +1571,11 @@ function selectZipFromBrowser(fullZipPath) {
   document.getElementById('selectedZipPath').value = fullZipPath;
   updateButtonLabels();
   closeBrowser();
+}
+
+function selectApkFromBrowser(fullApkPath) {
+  closeBrowser();
+  openMtInstallerForApk(fullApkPath);
 }
 
 function confirmCurrentDir() {

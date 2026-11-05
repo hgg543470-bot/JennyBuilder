@@ -10,6 +10,7 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
 
     <queries>
         <package android:name="com.jenny.player" />
@@ -81,6 +82,12 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+
+        <provider
+            android:name=".ApkContentProvider"
+            android:authorities="com.jenny.builder.apkprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
 
         <service
             android:name=".PlaybackService"

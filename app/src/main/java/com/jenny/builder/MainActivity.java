@@ -40,6 +40,14 @@ public class MainActivity extends AppCompatActivity {
     private static final int REQ_FILE_CHOOSER = 45;
     private static ValueCallback<Uri[]> filePathCallbackV166 = null;
     private static boolean autoAskedStorageOnceV166 = false;
+    private static final int REQ_INSTALL_PERM = 46;
+    private static final int REQ_UNINSTALL_PKG = 47;
+    private static String pendingInstallApkPathV170 = null;
+    private static String pendingUninstallPkgV170 = null;
+    private static Runnable installPermWatchRunnableV170 = null;
+    private static int installPermWatchTicksV170 = 0;
+    private static Runnable uninstallWatchRunnableV170 = null;
+    private static int uninstallWatchTicksV170 = 0;
     private static MainActivity instance;
     private static WebView webView;
     private static boolean isPageLoaded = false;
@@ -507,6 +515,129 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception ignored) {}
     }
 
+    private String getSignatureSha256V170(android.content.pm.PackageInfo pi) {
+        try {
+            if (pi == null) return "";
+            android.content.pm.Signature[] sigs = null;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && pi.signingInfo != null) {
+                if (pi.signingInfo.hasMultipleSigners()) {
+                    sigs = pi.signingInfo.getApkContentsSigners();
+                } else {
+                    sigs = pi.signingInfo.getSigningCertificateHistory();
+                }
+            }
+            if ((sigs == null || sigs.length == 0) && pi.signatures != null) {
+                sigs = pi.signatures;
+            }
+            if (sigs != null && sigs.length > 0 && sigs[0] != null) {
+                java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+                byte[] digest = md.digest(sigs[0].toByteArray());
+                StringBuilder sb = new StringBuilder();
+                for (byte b : digest) {
+                    sb.append(String.format("%02x", b));
+                }
+                return sb.toString();
+            }
+        } catch (Exception ignored) {}
+        return "";
+    }
+
+    private boolean canInstallApksInternalV170() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            return getPackageManager().canRequestPackageInstalls();
+        }
+        return true;
+    }
+
+    private void launchApkInstallerIntentV170(final String apkPath) {
+        runOnUiThread(() -> {
+            try {
+                if (apkPath == null || apkPath.isEmpty()) return;
+                File apkFile = new File(apkPath);
+                if (!apkFile.exists()) {
+                    android.widget.Toast.makeText(getApplicationContext(), "❌ APK не найден: " + apkPath, android.widget.Toast.LENGTH_LONG).show();
+                    return;
+                }
+                Uri contentUri = ApkContentProvider.getUriForFile(apkFile);
+                Intent intent = new Intent(Intent.ACTION_VIEW);
+                intent.setDataAndType(contentUri, "application/vnd.android.package-archive");
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+            } catch (Exception e) {
+                e.printStackTrace();
+                android.widget.Toast.makeText(getApplicationContext(), "❌ Ошибка запуска установщика: " + e.getMessage(), android.widget.Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    private void startInstallPermRadarV170() {
+        if (installPermWatchRunnableV170 != null) {
+            permWatchHandlerV147.removeCallbacks(installPermWatchRunnableV170);
+        }
+        installPermWatchTicksV170 = 0;
+        installPermWatchRunnableV170 = new Runnable() {
+            @Override
+            public void run() {
+                installPermWatchTicksV170++;
+                if (canInstallApksInternalV170()) {
+                    permWatchHandlerV147.removeCallbacks(this);
+                    installPermWatchRunnableV170 = null;
+                    try {
+                        finishActivity(REQ_INSTALL_PERM);
+                    } catch (Exception ignored) {}
+                    final String nextApk = pendingInstallApkPathV170;
+                    pendingInstallApkPathV170 = null;
+                    if (nextApk != null && !nextApk.isEmpty()) {
+                        permWatchHandlerV147.postDelayed(() -> launchApkInstallerIntentV170(nextApk), 250);
+                    }
+                    return;
+                }
+                if (installPermWatchTicksV170 < 500) {
+                    permWatchHandlerV147.postDelayed(this, 150);
+                }
+            }
+        };
+        permWatchHandlerV147.postDelayed(installPermWatchRunnableV170, 150);
+    }
+
+    private void startUninstallWatchRadarV170() {
+        if (uninstallWatchRunnableV170 != null) {
+            permWatchHandlerV147.removeCallbacks(uninstallWatchRunnableV170);
+        }
+        uninstallWatchTicksV170 = 0;
+        uninstallWatchRunnableV170 = new Runnable() {
+            @Override
+            public void run() {
+                uninstallWatchTicksV170++;
+                String pkg = pendingUninstallPkgV170;
+                if (pkg == null || pkg.isEmpty()) return;
+                boolean stillInstalled = true;
+                try {
+                    getPackageManager().getPackageInfo(pkg, 0);
+                } catch (PackageManager.NameNotFoundException notFound) {
+                    stillInstalled = false;
+                } catch (Exception ignored) {}
+
+                if (!stillInstalled) {
+                    permWatchHandlerV147.removeCallbacks(this);
+                    uninstallWatchRunnableV170 = null;
+                    pendingUninstallPkgV170 = null;
+                    final String nextApk = pendingInstallApkPathV170;
+                    pendingInstallApkPathV170 = null;
+                    evalJs("if(window.onUninstallCompletedV170) window.onUninstallCompletedV170();");
+                    if (nextApk != null && !nextApk.isEmpty()) {
+                        permWatchHandlerV147.postDelayed(() -> launchApkInstallerIntentV170(nextApk), 300);
+                    }
+                    return;
+                }
+                if (uninstallWatchTicksV170 < 600) {
+                    permWatchHandlerV147.postDelayed(this, 150);
+                }
+            }
+        };
+        permWatchHandlerV147.postDelayed(uninstallWatchRunnableV170, 150);
+    }
+
     private boolean hasStoragePermissionInternalV165() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             return Environment.isExternalStorageManager();
@@ -925,6 +1056,139 @@ public class MainActivity extends AppCompatActivity {
         }
 
                 @JavascriptInterface
+        public String inspectApkFileJson(String apkPath) {
+            try {
+                JSONObject obj = new JSONObject();
+                File f = new File(apkPath != null ? apkPath : "");
+                if (!f.exists()) {
+                    obj.put("status", "error");
+                    obj.put("error", "Файл APK не найден: " + apkPath);
+                    return obj.toString();
+                }
+                PackageManager pm = getPackageManager();
+                int flags = PackageManager.GET_SIGNATURES;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    flags |= PackageManager.GET_SIGNING_CERTIFICATES;
+                }
+                android.content.pm.PackageInfo archiveInfo = pm.getPackageArchiveInfo(apkPath, flags);
+                if (archiveInfo == null) {
+                    obj.put("status", "error");
+                    obj.put("error", "Не удалось прочитать заголовок APK: " + apkPath);
+                    return obj.toString();
+                }
+                String pkg = archiveInfo.packageName;
+                String apkVerName = archiveInfo.versionName != null ? archiveInfo.versionName : "";
+                long apkVerCode = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) ? archiveInfo.getLongVersionCode() : archiveInfo.versionCode;
+                String apkSig = getSignatureSha256V170(archiveInfo);
+
+                String appName = pkg;
+                if (archiveInfo.applicationInfo != null) {
+                    archiveInfo.applicationInfo.sourceDir = apkPath;
+                    archiveInfo.applicationInfo.publicSourceDir = apkPath;
+                    CharSequence lbl = pm.getApplicationLabel(archiveInfo.applicationInfo);
+                    if (lbl != null) appName = lbl.toString();
+                }
+
+                obj.put("status", "ok");
+                obj.put("apkPath", apkPath);
+                obj.put("fileName", f.getName());
+                obj.put("sizeMb", Math.round((f.length() / (1024.0 * 1024.0)) * 100.0) / 100.0);
+                obj.put("package", pkg);
+                obj.put("appName", appName);
+                obj.put("apkVersionName", apkVerName);
+                obj.put("apkVersionCode", apkVerCode);
+                obj.put("apkSignature", apkSig);
+                obj.put("canInstall", canInstallApksInternalV170());
+
+                try {
+                    android.content.pm.PackageInfo instInfo = pm.getPackageInfo(pkg, flags);
+                    long instVerCode = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) ? instInfo.getLongVersionCode() : instInfo.versionCode;
+                    String instVerName = instInfo.versionName != null ? instInfo.versionName : "";
+                    String instSig = getSignatureSha256V170(instInfo);
+
+                    obj.put("alreadyInstalled", true);
+                    obj.put("installedVersionName", instVerName);
+                    obj.put("installedVersionCode", instVerCode);
+                    obj.put("installedSignature", instSig);
+                    boolean sigMismatch = (!apkSig.isEmpty() && !instSig.isEmpty() && !apkSig.equals(instSig));
+                    boolean isDowngrade = (apkVerCode < instVerCode);
+                    obj.put("signatureMismatch", sigMismatch);
+                    obj.put("isDowngrade", isDowngrade);
+                } catch (PackageManager.NameNotFoundException notInst) {
+                    obj.put("alreadyInstalled", false);
+                    obj.put("signatureMismatch", false);
+                    obj.put("isDowngrade", false);
+                }
+                return obj.toString();
+            } catch (Exception e) {
+                try {
+                    JSONObject err = new JSONObject();
+                    err.put("status", "error");
+                    err.put("error", e.toString());
+                    return err.toString();
+                } catch (Exception e2) {
+                    return "{\"status\":\"error\"}";
+                }
+            }
+        }
+
+        @JavascriptInterface
+        public void installApkDirect(final String apkPath) {
+            runOnUiThread(() -> {
+                try {
+                    if (!canInstallApksInternalV170()) {
+                        pendingInstallApkPathV170 = apkPath;
+                        isOpeningSettingsV146 = true;
+                        startInstallPermRadarV170();
+                        android.widget.Toast.makeText(
+                            getApplicationContext(),
+                            "🔓 Разреши «Установку из этого источника» для Jenny Builder!",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show();
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            Intent intent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName()));
+                            startActivityForResult(intent, REQ_INSTALL_PERM);
+                        }
+                        return;
+                    }
+                    launchApkInstallerIntentV170(apkPath);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void uninstallAndInstallApk(final String pkgName, final String apkPath) {
+            runOnUiThread(() -> {
+                try {
+                    if (!canInstallApksInternalV170()) {
+                        pendingInstallApkPathV170 = apkPath;
+                        isOpeningSettingsV146 = true;
+                        startInstallPermRadarV170();
+                        android.widget.Toast.makeText(
+                            getApplicationContext(),
+                            "🔓 Сначала разреши «Установку из этого источника» для Jenny Builder!",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show();
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            Intent intent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName()));
+                            startActivityForResult(intent, REQ_INSTALL_PERM);
+                        }
+                        return;
+                    }
+                    pendingUninstallPkgV170 = pkgName;
+                    pendingInstallApkPathV170 = apkPath;
+                    startUninstallWatchRadarV170();
+                    Intent uninstallIntent = new Intent(Intent.ACTION_DELETE, Uri.parse("package:" + pkgName));
+                    startActivityForResult(uninstallIntent, REQ_UNINSTALL_PKG);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            });
+        }
+
+        @JavascriptInterface
         public String getInstalledAppInfoJson(String pkgName) {
             try {
                 android.content.pm.PackageManager pm = getPackageManager();
