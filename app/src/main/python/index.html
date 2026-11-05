@@ -162,18 +162,7 @@
       <div>🎵 <b>Jenny Player:</b> <span id="instPlayerMain" style="color:#fff;font-weight:bold;">проверка...</span></div>
       <div id="instPlayerSub" style="font-size:10.5px;color:#8b949e;margin-bottom:4px;"></div>
 
-      <!-- Если текущий APK плеера был собран до внедрения авто-штампа номера (#), можно указать какая сборка сейчас стоит -->
-      <div id="manualBuildPickerRow" style="display:none;margin:5px 0;padding:6px;background:#090d13;border-radius:6px;border:1px solid #233829;">
-        <div style="font-size:10px;color:#f2cc60;margin-bottom:3px;">
-          💡 Текущий APK плеера был собран ещё без авто-штампа в build.gradle. Укажи какая сборка сейчас стоит (со следующей сборки будет определяться само на 100%):
-        </div>
-        <select id="manualInstalledSelect" style="margin-bottom:0;font-size:11px;padding:5px;" onchange="setManualInstalledBuild(this.value)"></select>
-      </div>
-
-      <div style="border-top:1px dashed #233829;padding-top:4px;font-size:10.5px;color:#8b949e;">
-        🛠️ <b>Jenny Builder:</b> <span id="instBuilderMain" style="color:#d2a8ff;">v1.6</span>
-      </div>
-    </div>
+      
   </div>
 </div>
 
@@ -465,7 +454,7 @@ function renderInstalledStatus(inst) {
     }
     pSub.textContent = subParts.join(' • ');
     if (manualRow) {
-      manualRow.style.display = p.is_exact_stamp ? 'none' : 'block';
+      if (manualRow) manualRow.style.display = 'none';
     }
   }
 

@@ -641,22 +641,15 @@ def _extract_java_symbols(text: str) -> dict:
     return _extract_brace_blocks(text, pat, fmt)
 
 
-def _compact_unified_diff(old_str: str, new_str: str, max_lines: int = 24) -> list:
+def _compact_unified_diff(old_str: str, new_str: str, max_lines: int = 0) -> list:
     old_lines = old_str.splitlines()
     new_lines = new_str.splitlines()
-    diff = list(difflib.unified_diff(old_lines, new_lines, n=1, lineterm=""))
+    diff = list(difflib.unified_diff(old_lines, new_lines, n=2, lineterm=""))
     out = []
     for ln in diff:
-        if ln.startswith(("---", "+++", "@@")):
+        if ln.startswith(("---", "+++")):
             continue
-        if ln.startswith(("+", "-")):
-            clean = ln[0] + " " + ln[1:].strip()
-            if len(clean) > 120:
-                clean = clean[:117] + "..."
-            out.append(clean)
-            if len(out) >= max_lines:
-                out.append("  ... (остальные строки опущены)")
-                break
+        out.append(ln)
     return out
 
 
@@ -721,16 +714,9 @@ def _analyze_single_file_diff(rel_path: str, old_bytes: bytes, new_bytes: bytes,
                 removed_funcs.append(info["sig"])
 
     if git_patch_str:
-        patch_preview = []
-        for ln in git_patch_str.splitlines():
-            if ln.startswith(("@@", "+", "-")) and not ln.startswith(("---", "+++")):
-                patch_preview.append(ln[:125] + ("..." if len(ln) > 125 else ""))
-                if len(patch_preview) >= 28:
-                    patch_preview.append("  ... (остальные строки git patch опущены)")
-                    break
-        raw_preview = patch_preview
+        raw_preview = git_patch_str.splitlines()
     else:
-        raw_preview = _compact_unified_diff(old_text, new_text, max_lines=22)
+        raw_preview = _compact_unified_diff(old_text, new_text)
 
     return {
         "path": rel_path,
