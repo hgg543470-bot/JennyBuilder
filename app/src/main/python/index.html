@@ -161,8 +161,10 @@
     <div style="font-size:11.5px;line-height:1.45;">
       <div>🎵 <b>Jenny Player:</b> <span id="instPlayerMain" style="color:#fff;font-weight:bold;">проверка...</span></div>
       <div id="instPlayerSub" style="font-size:10.5px;color:#8b949e;margin-bottom:4px;"></div>
-
-      
+      <div style="border-top:1px dashed #233829;padding-top:4px;font-size:10.5px;color:#8b949e;">
+        🛠️ <b>Jenny Builder:</b> <span id="instBuilderMain" style="color:#d2a8ff;">проверка...</span>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -370,7 +372,7 @@ function populateComparisonDropdowns(runs) {
 
   for (let i = 0; i < runs.length; i++) {
     const r = runs[i];
-    const vt = r.version_tag ? (' / ' + r.version_tag) : '';
+    const vt = '';
     const isInst = (instBnum && r.run_number === instBnum);
     const instPrefix = isInst ? '📲 [УСТАНОВЛЕНА СЕЙЧАС] ' : '';
     const shortTitle = (r.title || '').length > 36 ? (r.title.substring(0, 36) + '...') : (r.title || '');
@@ -389,7 +391,7 @@ function populateComparisonDropdowns(runs) {
   targetHtml += '<option value="LOCAL_ZIP">📦 Выбранный .zip архив (' + zipP + ')</option>';
   for (let j = 0; j < runs.length; j++) {
     const r = runs[j];
-    const vt = r.version_tag ? (' / ' + r.version_tag) : '';
+    const vt = '';
     const shortTitle = (r.title || '').length > 36 ? (r.title.substring(0, 36) + '...') : (r.title || '');
     const lbl = '☁️ GitHub: Сборка #' + r.run_number + vt + ' (ID: ' + r.head_sha + ') — ' + shortTitle;
     targetHtml += '<option value="GH:' + r.full_sha + '" data-label="Сборка #' + r.run_number + vt + ' (ID: ' + r.head_sha + ')">' + lbl + '</option>';
@@ -425,44 +427,43 @@ async function setManualInstalledBuild(bnumStr) {
 }
 
 function renderInstalledStatus(inst) {
-  if (!inst) return;
-  currentInstalledState = inst;
-  const p = inst.player || {};
-  const b = inst.builder || {};
+  try {
+    if (!inst) return;
+    currentInstalledState = inst;
+    const p = inst.player || {};
+    const b = inst.builder || {};
 
-  const pMain = document.getElementById('instPlayerMain');
-  const pSub = document.getElementById('instPlayerSub');
-  const bMain = document.getElementById('instBuilderMain');
-  const manualRow = document.getElementById('manualBuildPickerRow');
+    const pMain = document.getElementById('instPlayerMain');
+    const pSub = document.getElementById('instPlayerSub');
+    const bMain = document.getElementById('instBuilderMain');
 
-  if (!p.installed) {
-    pMain.textContent = 'Не установлен на телефоне ❌';
-    pMain.style.color = '#ff7b72';
-    pSub.textContent = '';
-    if (manualRow) manualRow.style.display = 'none';
-  } else {
-    pMain.textContent = '🟢 ' + (p.human_summary || ('Версия ' + p.versionName));
-    pMain.style.color = '#7ee787';
-    let subParts = [];
-    if (p.updated_at) subParts.push('Установлен: ' + p.updated_at);
-    if (latestGoodBuildInfo && latestGoodBuildInfo.run_number && p.build_number) {
-      if (p.build_number >= latestGoodBuildInfo.run_number) {
-        subParts.push('✅ Установлена самая свежая сборка с GitHub');
+    if (pMain && pSub) {
+      if (!p.installed) {
+        pMain.textContent = 'Не установлен на телефоне ❌';
+        pMain.style.color = '#ff7b72';
+        pSub.textContent = '';
       } else {
-        subParts.push('⚠️ На GitHub есть более новая Сборка #' + latestGoodBuildInfo.run_number);
+        pMain.textContent = '🟢 ' + (p.human_summary || ('Версия ' + p.versionName));
+        pMain.style.color = '#7ee787';
+        let subParts = [];
+        if (p.updated_at) subParts.push('Установлен: ' + p.updated_at);
+        if (latestGoodBuildInfo && latestGoodBuildInfo.run_number && p.build_number) {
+          if (p.build_number >= latestGoodBuildInfo.run_number) {
+            subParts.push('✅ Установлена самая свежая сборка с GitHub (#' + p.build_number + ')');
+          } else {
+            subParts.push('⚠️ На GitHub есть более новая Сборка #' + latestGoodBuildInfo.run_number);
+          }
+        }
+        pSub.textContent = subParts.join(' • ');
       }
     }
-    pSub.textContent = subParts.join(' • ');
-    if (manualRow) {
-      if (manualRow) manualRow.style.display = 'none';
-    }
-  }
 
-  if (b.installed) {
-    let bTxt = b.human_summary || ('v' + b.versionName);
-    if (b.updated_at) bTxt += ' (обновлён: ' + b.updated_at + ')';
-    bMain.textContent = bTxt;
-  }
+    if (bMain && b.installed) {
+      let bTxt = b.human_summary || ('v' + b.versionName);
+      if (b.updated_at) bTxt += ' (обновлён: ' + b.updated_at + ')';
+      bMain.textContent = bTxt;
+    }
+  } catch (e) {}
 }
 
 async function refreshInstalledVersion() {
@@ -490,7 +491,7 @@ function updateButtonLabels() {
 
   let ghGoodDesc = 'GitHub (' + repo + ')';
   if (latestGoodBuildInfo && latestGoodBuildInfo.run_number) {
-    const vt = latestGoodBuildInfo.version_tag ? (' / ' + latestGoodBuildInfo.version_tag) : '';
+    const vt = '';
     ghGoodDesc = 'GitHub: Сборка #' + latestGoodBuildInfo.run_number + vt;
   }
 
@@ -513,15 +514,13 @@ function updateButtonLabels() {
     'Откуда: ' + ghGoodDesc + ' ➔ В папку: ' + saveP;
 
   if (latestGoodBuildInfo && latestGoodBuildInfo.run_number) {
-    const vt = latestGoodBuildInfo.version_tag ? (' (' + latestGoodBuildInfo.version_tag + ')') : '';
+    const vt = '';
     document.getElementById('mainPullFolder').textContent =
       '⬇️ ИМПОРТ: Скачать Сборку #' + latestGoodBuildInfo.run_number + vt + ' с GitHub в рабочую папку';
     document.getElementById('mainDlGoodZip').textContent =
       '✅ Скачать чистый .zip архив Сборки #' + latestGoodBuildInfo.run_number + vt + ' с GitHub';
   }
-  if (allLoadedRuns.length > 0) {
-    populateComparisonDropdowns(allLoadedRuns);
-  }
+
 }
 
 async function runSelectedComparison() {
@@ -1062,7 +1061,7 @@ async function loadRuns() {
       const isSel = (d.active && d.active.run_id === item.id);
       const isInstalledNow = (instPlayerBuild && item.run_number === instPlayerBuild);
       const borderCol = isInstalledNow ? '#3fb950' : (isSel ? '#a371f7' : '#21262d');
-      const vBadge = item.version_tag ? (' [' + item.version_tag + ']') : '';
+      const vBadge = '';
       const instBadgeHtml = isInstalledNow ? '<span class="inst-badge">📲 УСТАНОВЛЕНА СЕЙЧАС</span>' : '';
       const safeVer = (item.version_tag || '').replace(/'/g, '');
       html += '<div class="run-item" style="border-color:' + borderCol + ';" onclick="selectRun(' + item.id + ')">';

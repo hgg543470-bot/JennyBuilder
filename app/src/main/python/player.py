@@ -1099,24 +1099,40 @@ def _resolve_target_branch(token: str = "", repo: str = "") -> tuple:
 
 
 def _ensure_build_yml_stamps_version(file_map: dict):
-    """Автоматически добавляет шаг штамповки versionCode = GITHUB_RUN_NUMBER и versionName = #GITHUB_RUN_NUMBER (...) в .github/workflows/build.yml."""
+    """Автоматически добавляет безопасный Python-штамп versionCode и versionName в .github/workflows/build.yml."""
     yml_key = ".github/workflows/build.yml"
     if yml_key in file_map:
         try:
             yml_str = file_map[yml_key].decode("utf-8", errors="replace")
-            if "Штамп номера сборки" not in yml_str and "gradle assembleDebug" in yml_str:
-                target = "    - name: Сборка APK\n      run: gradle assembleDebug"
-                stamp_lines = [
-                    "    - name: Штамп номера сборки и версии в APK",
-                    "      run: |",
-                    "        SHORT_MSG=$(git log -1 --pretty=%s | tr -d '\"\\\\' | cut -c1-48)",
-                    '        sed -i "s/versionCode .*/versionCode ${GITHUB_RUN_NUMBER}/" app/build.gradle',
-                    '        sed -i "s/versionName \\".*\\"/versionName \\"#${GITHUB_RUN_NUMBER} (${SHORT_MSG})\\"/" app/build.gradle',
-                    "",
-                    "    - name: Сборка APK",
-                    "      run: gradle assembleDebug",
-                ]
-                yml_str = yml_str.replace(target, "\n".join(stamp_lines))
+            stamp_lines = [
+                "    - name: Штамп номера сборки и версии в APK",
+                "      run: |",
+                "        python3 - << 'STAMP_EOF'",
+                "        import os, re, subprocess",
+                '        bnum = os.environ.get("GITHUB_RUN_NUMBER", "1")',
+                '        msg = subprocess.check_output(["git", "log", "-1", "--pretty=%s"], text=True).strip()',
+                '        msg = "".join(c for c in msg if ord(c) >= 32 and c not in (chr(34), chr(39), chr(92), "$"))[:48]',
+                '        s = open("app/build.gradle", "r", encoding="utf-8").read()',
+                '        s = re.sub("versionCode\\\\s+\\\\d+", lambda _: f"versionCode {bnum}", s)',
+                '        s = re.sub("versionName\\\\s+\\"[^\\"]*\\"", lambda _: f"versionName \\"#{bnum} ({msg})\\"", s)',
+                '        open("app/build.gradle", "w", encoding="utf-8").write(s)',
+                "        STAMP_EOF",
+                "",
+                "    - name: Сборка APK",
+                "      run: gradle assembleDebug",
+            ]
+            if "STAMP_EOF" not in yml_str and "gradle assembleDebug" in yml_str:
+                yml_str = re.sub(
+                    r"    - name: Штамп номера сборки и версии в APK.*?    - name: Сборка APK\n      run: gradle assembleDebug",
+                    "\n".join(stamp_lines),
+                    yml_str,
+                    flags=re.DOTALL,
+                )
+                if "STAMP_EOF" not in yml_str:
+                    yml_str = yml_str.replace(
+                        "    - name: Сборка APK\n      run: gradle assembleDebug",
+                        "\n".join(stamp_lines),
+                    )
                 file_map[yml_key] = yml_str.encode("utf-8")
         except Exception:
             pass
@@ -1568,7 +1584,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
 
                 repo_short = cfg["repo"].split("/")[-1]
                 ver_suffix = f"_{version_tag}" if version_tag else ""
-                out_apk_name = f"{repo_short}_#{run_number}{ver_suffix}.apk"
+                out_apk_name = f"{repo_short}_#{run_number}.apk"
                 out_apk_path = os.path.join(save_dir, out_apk_name)
 
                 with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
@@ -1613,7 +1629,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 bnum = meta.get("build_number") or "latest"
                 vtag = meta.get("version_tag")
                 ver_part = f"_{vtag}" if vtag else ""
-                out_zip_name = f"{repo_short}_#{bnum}{ver_part}_clean.zip"
+                out_zip_name = f"{repo_short}_#{bnum}_clean.zip"
                 out_zip_path = os.path.join(save_dir, out_zip_name)
 
                 with zipfile.ZipFile(io.BytesIO(raw_zip_bytes), "r") as zin, zipfile.ZipFile(out_zip_path, "w", zipfile.ZIP_DEFLATED) as zout:

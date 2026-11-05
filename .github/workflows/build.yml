@@ -54,7 +54,8 @@ jobs:
         import os, re, subprocess
         bnum = os.environ.get("GITHUB_RUN_NUMBER", "1")
         msg = subprocess.check_output(["git", "log", "-1", "--pretty=%s"], text=True).strip()
-        msg = "".join(c for c in msg if ord(c) >= 32 and c not in (chr(34), chr(39), chr(92), "$"))[:48]
+        msg = re.sub(r'["\$
+]', '', msg)[:48]
         s = open("app/build.gradle", "r", encoding="utf-8").read()
         s = re.sub(r"versionCode\s+\d+", lambda _: f"versionCode {bnum}", s)
         s = re.sub(r'versionName\s+"[^"]*"', lambda _: f'versionName "#{bnum} ({msg})"', s)
