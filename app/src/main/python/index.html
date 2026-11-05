@@ -516,6 +516,7 @@ let pendingMtPkgName = '';
 let progressPollTimer = null;
 
 let isCurrentTaskCancellable = false;
+let topHeaderObserverInit = false;
 
 function syncTopBarsLayout() {
   const topCard = document.getElementById('topHeaderCard');
@@ -523,14 +524,23 @@ function syncTopBarsLayout() {
   const progBanner = document.getElementById('liveProgressBanner');
   if (!topCard || !compactBar) return;
   const rect = topCard.getBoundingClientRect();
-  const outOfView = (rect.bottom <= 6);
+  const outOfView = (rect.bottom <= 4);
   compactBar.style.display = outOfView ? 'flex' : 'none';
   if (progBanner) {
     progBanner.style.top = outOfView ? '44px' : '6px';
   }
+  if (!topHeaderObserverInit && typeof IntersectionObserver !== 'undefined') {
+    topHeaderObserverInit = true;
+    try {
+      const obs = new IntersectionObserver(() => { syncTopBarsLayout(); }, {threshold: [0, 0.05, 0.15, 1]});
+      obs.observe(topCard);
+    } catch (e) {}
+  }
 }
 
 window.addEventListener('scroll', syncTopBarsLayout, {passive: true});
+document.addEventListener('scroll', syncTopBarsLayout, {passive: true});
+window.addEventListener('touchmove', syncTopBarsLayout, {passive: true});
 window.addEventListener('resize', syncTopBarsLayout, {passive: true});
 
 async function cancelActiveDownload() {
@@ -586,6 +596,7 @@ function startProgressPolling(initialTitle, initialDetail, cancellable) {
     try {
       const r = await fetch('/api/progress');
       const d = await r.json();
+      if (!progressPollTimer) return;
       if (d.status === 'ok' && d.progress) {
         const p = d.progress;
         if (p.active) {
@@ -600,8 +611,7 @@ function startProgressPolling(initialTitle, initialDetail, cancellable) {
             cancelBtn.style.display = showCanc ? 'inline-block' : 'none';
           }
           if (p.detail) {
-            showStatus('⏳ ' + (p.title || titleStr) + ' (' + p.percent + '% • ' + (p.elapsed_sec || 0) + ' сек)
-• ' + p.detail, false);
+            showStatus('⏳ ' + (p.title || titleStr) + ' (' + p.percent + '% • ' + (p.elapsed_sec || 0) + ' сек)\n• ' + p.detail, false);
           }
         }
       }
@@ -797,8 +807,7 @@ function selectCompareOption(spec) {
   refreshCompareLabelsUi();
   closeComparePicker();
   const chosenLbl = (activeComparePickerSide === 'base') ? compareBaseLabel : compareTargetLabel;
-  showStatus('🔬 Выбран ' + sideName + ' для сравнения:
-• ' + chosenLbl, false);
+  showStatus('🔬 Выбран ' + sideName + ' для сравнения:\n• ' + chosenLbl, false);
 }
 
 // ==============================================================================
