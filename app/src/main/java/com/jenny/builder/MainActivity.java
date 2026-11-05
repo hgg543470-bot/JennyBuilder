@@ -13,6 +13,7 @@ import android.provider.Settings;
 import android.system.Os;
 import android.view.View;
 import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -36,6 +37,9 @@ public class MainActivity extends AppCompatActivity {
     private static final int REQ_PICK_FOLDER = 42;
     private static final int REQ_PICK_TORRENT = 43;
     private static final int REQ_OVERLAY_PERM = 44;
+    private static final int REQ_FILE_CHOOSER = 45;
+    private static ValueCallback<Uri[]> filePathCallbackV166 = null;
+    private static boolean autoAskedStorageOnceV166 = false;
     private static MainActivity instance;
     private static WebView webView;
     private static boolean isPageLoaded = false;
@@ -879,7 +883,27 @@ public class MainActivity extends AppCompatActivity {
         webView.clearCache(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
         webView.setWebViewClient(new WebViewClient());
-        webView.setWebChromeClient(new WebChromeClient());
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
+                try {
+                    if (filePathCallbackV166 != null) {
+                        filePathCallbackV166.onReceiveValue(null);
+                    }
+                    filePathCallbackV166 = filePathCallback;
+                    isOpeningSettingsV146 = true;
+                    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("*/*");
+                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    startActivityForResult(Intent.createChooser(intent, "Выбери .zip архив"), REQ_FILE_CHOOSER);
+                    return true;
+                } catch (Exception e) {
+                    filePathCallbackV166 = null;
+                    return false;
+                }
+            }
+        });
 
         webView.addJavascriptInterface(new WebAppInterface(), "AndroidBridge");
         getWindow().getDecorView().setOnSystemUiVisibilityChangeListener(visibility -> {
@@ -1101,6 +1125,26 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_FILE_CHOOSER) {
+            if (filePathCallbackV166 != null) {
+                Uri[] results = null;
+                if (resultCode == Activity.RESULT_OK && data != null) {
+                    String dataString = data.getDataString();
+                    android.content.ClipData clipData = data.getClipData();
+                    if (clipData != null) {
+                        results = new Uri[clipData.getItemCount()];
+                        for (int i = 0; i < clipData.getItemCount(); i++) {
+                            results[i] = clipData.getItemAt(i).getUri();
+                        }
+                    } else if (dataString != null) {
+                        results = new Uri[]{Uri.parse(dataString)};
+                    }
+                }
+                filePathCallbackV166.onReceiveValue(results);
+                filePathCallbackV166 = null;
+            }
+            return;
+        }
         if (requestCode == REQ_PICK_TORRENT && resultCode == Activity.RESULT_OK && data != null) {
             Uri uri = data.getData();
             if (uri != null) {
@@ -1205,9 +1249,20 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void checkPermissionsAndStart() {
-        // Всегда сразу запускаем сервер и интерфейс, чтобы стартовый гид (Onboarding V165)
-        // встретил пользователя в фирменном стиле без резких перебросов в настройки!
         startPythonServer();
+        if (!hasStoragePermissionInternalV165() && !autoAskedStorageOnceV166) {
+            autoAskedStorageOnceV166 = true;
+            permWatchHandlerV147.postDelayed(() -> {
+                if (!hasStoragePermissionInternalV165()) {
+                    android.widget.Toast.makeText(
+                        getApplicationContext(),
+                        "🔓 Включи «Доступ ко всем файлам» для Jenny Builder!",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show();
+                    new WebAppInterface().requestStoragePermission();
+                }
+            }, 1200);
+        }
     }
 
     @Override

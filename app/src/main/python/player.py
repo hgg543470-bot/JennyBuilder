@@ -17,7 +17,7 @@ import threading as _threading_boot
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8795
-CONFIG_PATH = "/storage/emulated/0/Download/.jenny_builder_cfg.json"
+EXT_CONFIG_PATH = "/storage/emulated/0/Download/.jenny_builder_cfg.json"
 DEFAULT_PROJECT_DIR = "/storage/emulated/0/scripts/JennyPlayer"
 DEFAULT_SAVE_DIR = "/storage/emulated/0/Download"
 DEFAULT_REPO = "hgg543470-bot/JennyPlayer"
@@ -26,40 +26,150 @@ EXCLUDE_DIRS = {".git", "__pycache__", ".gradle", "build", ".idea", ".Temp"}
 EXCLUDE_EXTS = {".pyc", ".pyo", ".log"}
 EXCLUDE_FILES = {"omni_full_trace.log", "omni_simple.log", "shizuku_window_dump.txt"}
 
+_MEM_CFG = {}
+
+
+def _get_config_paths():
+    paths = []
+    internal_dir = (os.environ.get("JENNY_FILES_DIR") or "").strip()
+    if not internal_dir:
+        internal_dir = os.path.expanduser("~")
+    if internal_dir:
+        paths.append(os.path.join(internal_dir, ".jenny_builder_cfg.json"))
+    paths.append("/data/data/com.jenny.builder/files/.jenny_builder_cfg.json")
+    paths.append("/data/user/0/com.jenny.builder/files/.jenny_builder_cfg.json")
+    paths.append(EXT_CONFIG_PATH)
+    out = []
+    for p in paths:
+        if p and p not in out:
+            out.append(p)
+    return out
+
 
 class _NoAuthRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
         if new_req is not None:
-            orig_host = urllib.parse.urlparse(req.full_url).hostname or ""
-            new_host = urllib.parse.urlparse(newurl).hostname or ""
-            if orig_host != new_host:
-                if "Authorization" in new_req.headers:
-                    del new_req.headers["Authorization"]
-                if "Authorization" in new_req.unredirected_hdrs:
-                    del new_req.unredirected_hdrs["Authorization"]
+            orig_host = (urllib.parse.urlparse(req.full_url).hostname or "").lower()
+            new_host = (urllib.parse.urlparse(newurl).hostname or "").lower()
+            is_signed_url = ("sig=" in newurl) or ("X-Amz-" in newurl) or ("se=" in newurl)
+            is_github_domain = new_host == "github.com" or new_host.endswith(".github.com")
+            if (orig_host != new_host and not is_github_domain) or is_signed_url:
+                for k in list(new_req.headers.keys()):
+                    if k.lower() == "authorization":
+                        del new_req.headers[k]
+                for k in list(new_req.unredirected_hdrs.keys()):
+                    if k.lower() == "authorization":
+                        del new_req.unredirected_hdrs[k]
         return new_req
 
 
-def _discover_git_token():
-    candidates = [
-        "/storage/emulated/0/scripts/JennyPlayer/.git/config",
-        "/storage/emulated/0/scripts/JennyBuilder/.git/config",
-    ]
-    for cfg_p in candidates:
-        if os.path.isfile(cfg_p):
-            try:
-                raw = open(cfg_p, "r", encoding="utf-8", errors="ignore").read()
-                m = re.search(r"https://([^:@/\s]+):?([^@/\s]*)@github\.com", raw)
-                if m:
-                    u, p = m.group(1), m.group(2)
-                    return p if p else u
-            except Exception:
-                pass
+def _parse_token_from_text(raw: str) -> str:
+    if not raw:
+        return ""
+    m_tok = re.search(r"(gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})", raw)
+    if m_tok:
+        return m_tok.group(1).strip()
+    m_url = re.search(r"https://([^:@/\s]+):([^@/\s]+)@github\.com", raw)
+    if m_url:
+        u, p = m_url.group(1).strip(), m_url.group(2).strip()
+        return p if p else u
+    m_single = re.search(r"https://([^:@/\s]+)@github\.com", raw)
+    if m_single:
+        cand = m_single.group(1).strip()
+        if cand.startswith(("gh", "github_pat_")) or len(cand) >= 25:
+            return cand
     return ""
 
 
-def load_config():
+def _extract_token_from_zip_bytes(zip_bytes: bytes) -> str:
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+            for name in zf.namelist():
+                norm = name.replace("\\", "/")
+                if norm.endswith(".git/config") or norm == ".git/config":
+                    raw = zf.read(name).decode("utf-8", errors="ignore")
+                    tok = _parse_token_from_text(raw)
+                    if tok:
+                        return tok
+    except Exception:
+        pass
+    return ""
+
+
+def _discover_git_token(extra_dirs=None) -> str:
+    candidates = []
+    if extra_dirs:
+        for d in extra_dirs:
+            if d:
+                d = d.strip()
+                if d.endswith(".git/config"):
+                    candidates.append(d)
+                else:
+                    candidates.append(os.path.join(d, ".git", "config"))
+                    candidates.append(os.path.join(os.path.dirname(d.rstrip("/")), ".git", "config"))
+
+    base_dirs = [
+        "/storage/emulated/0/scripts/JennyPlayer",
+        "/storage/emulated/0/scripts/JennyBuilder",
+        "/storage/emulated/0/JennyPlayer",
+        "/storage/emulated/0/JennyBuilder",
+        "/storage/emulated/0/Download/JennyPlayer",
+        "/storage/emulated/0/Download/JennyBuilder",
+    ]
+    for bd in base_dirs:
+        candidates.append(os.path.join(bd, ".git", "config"))
+
+    for parent_scan in ("/storage/emulated/0/scripts", "/storage/emulated/0/Download"):
+        try:
+            if os.path.isdir(parent_scan):
+                for entry in os.listdir(parent_scan):
+                    sub_git = os.path.join(parent_scan, entry, ".git", "config")
+                    if sub_git not in candidates:
+                        candidates.append(sub_git)
+        except Exception:
+            pass
+
+    for cfg_p in candidates:
+        try:
+            if cfg_p and os.path.isfile(cfg_p):
+                raw = open(cfg_p, "r", encoding="utf-8", errors="ignore").read()
+                tok = _parse_token_from_text(raw)
+                if tok:
+                    return tok
+        except Exception:
+            pass
+
+    # Также проверяем .zip архивы в Download, если внутри них есть .git/config
+    try:
+        if os.path.isdir(DEFAULT_SAVE_DIR):
+            for entry in os.listdir(DEFAULT_SAVE_DIR):
+                if entry.lower().endswith(".zip") and ("jenny" in entry.lower()):
+                    zp = os.path.join(DEFAULT_SAVE_DIR, entry)
+                    if os.path.isfile(zp) and os.path.getsize(zp) < 60 * 1024 * 1024:
+                        tok = _extract_token_from_zip_bytes(open(zp, "rb").read())
+                        if tok:
+                            return tok
+    except Exception:
+        pass
+
+    return ""
+
+
+def _persist_cfg_to_disk(cfg: dict):
+    for p in _get_config_paths():
+        try:
+            parent = os.path.dirname(p)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+
+def load_config() -> dict:
+    global _MEM_CFG
     cfg = {
         "repo": DEFAULT_REPO,
         "token": "",
@@ -67,36 +177,49 @@ def load_config():
         "source_dir": DEFAULT_PROJECT_DIR,
         "browse_dir": DEFAULT_SAVE_DIR,
     }
-    if os.path.isfile(CONFIG_PATH):
+    if _MEM_CFG:
+        cfg.update(_MEM_CFG)
+
+    for p in _get_config_paths():
         try:
-            saved = json.load(open(CONFIG_PATH, "r", encoding="utf-8"))
-            if isinstance(saved, dict):
-                cfg.update(saved)
+            if os.path.isfile(p):
+                saved = json.load(open(p, "r", encoding="utf-8"))
+                if isinstance(saved, dict):
+                    for k, v in saved.items():
+                        if v or not cfg.get(k):
+                            cfg[k] = v
         except Exception:
             pass
+
+    if _MEM_CFG.get("token"):
+        cfg["token"] = _MEM_CFG["token"]
+    if _MEM_CFG.get("repo"):
+        cfg["repo"] = _MEM_CFG["repo"]
+
     if not cfg.get("token"):
-        discovered = _discover_git_token()
+        discovered = _discover_git_token([cfg.get("source_dir"), cfg.get("browse_dir")])
         if discovered:
             cfg["token"] = discovered
-            try:
-                os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-                with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                    json.dump(cfg, f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
-    return cfg
+            _MEM_CFG.update(cfg)
+            _persist_cfg_to_disk(cfg)
+
+    _MEM_CFG.update(cfg)
+    return dict(cfg)
 
 
-def save_config(new_data: dict):
+def save_config(new_data: dict) -> dict:
+    global _MEM_CFG
     cfg = load_config()
-    cfg.update(new_data)
-    try:
-        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
-    return cfg
+    for k, v in (new_data or {}).items():
+        if v is not None:
+            cfg[k] = v.strip() if isinstance(v, str) else v
+    if not cfg.get("token"):
+        discovered = _discover_git_token([cfg.get("source_dir"), cfg.get("browse_dir")])
+        if discovered:
+            cfg["token"] = discovered
+    _MEM_CFG.update(cfg)
+    _persist_cfg_to_disk(cfg)
+    return dict(cfg)
 
 
 def gh_api(endpoint: str, method: str = "GET", payload: dict = None, token: str = "", repo: str = ""):
@@ -106,7 +229,7 @@ def gh_api(endpoint: str, method: str = "GET", payload: dict = None, token: str 
     url = endpoint if endpoint.startswith("http") else f"https://api.github.com/repos/{rep}/{endpoint.lstrip('/')}"
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "JennyBuilder-Android/1.1",
+        "User-Agent": "JennyBuilder-Android/1.2",
     }
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
@@ -116,11 +239,23 @@ def gh_api(endpoint: str, method: str = "GET", payload: dict = None, token: str 
         headers["Content-Type"] = "application/json; charset=utf-8"
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     opener = urllib.request.build_opener(_NoAuthRedirectHandler())
-    with opener.open(req, timeout=60) as resp:
-        raw = resp.read()
-        if not raw:
-            return {}
-        return json.loads(raw.decode("utf-8", errors="replace"))
+    try:
+        with opener.open(req, timeout=60) as resp:
+            raw = resp.read()
+            if not raw:
+                return {}
+            return json.loads(raw.decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as he:
+        err_body = ""
+        try:
+            err_body = he.read().decode("utf-8", errors="replace")[:300]
+        except Exception:
+            pass
+        if he.code in (401, 403) and not tok:
+            raise RuntimeError(
+                "Токен GitHub не задан или не прочитан из .git/config (разреши «Доступ ко всем файлам» или вставь токен в ⚙️ Настройки)."
+            )
+        raise RuntimeError(f"GitHub API HTTP {he.code}: {he.reason} {err_body}".strip())
 
 
 def gh_download_bytes(endpoint: str, token: str = "", repo: str = "") -> bytes:
@@ -130,7 +265,7 @@ def gh_download_bytes(endpoint: str, token: str = "", repo: str = "") -> bytes:
     url = endpoint if endpoint.startswith("http") else f"https://api.github.com/repos/{rep}/{endpoint.lstrip('/')}"
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "JennyBuilder-Android/1.1",
+        "User-Agent": "JennyBuilder-Android/1.2",
     }
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
@@ -150,7 +285,7 @@ def gh_download_bytes(endpoint: str, token: str = "", repo: str = "") -> bytes:
         except Exception as e:
             last_err = e
             time.sleep(1.5)
-    raise RuntimeError(f"Не удалось докачать поток после 4 попыток: {last_err}")
+    raise RuntimeError(f"Не удалось скачать поток после 4 попыток: {last_err}")
 
 
 def _git_blob_sha1(data: bytes) -> str:
@@ -159,6 +294,12 @@ def _git_blob_sha1(data: bytes) -> str:
 
 
 def _collect_files_from_zip_bytes(zip_bytes: bytes) -> dict:
+    cfg = load_config()
+    if not cfg.get("token"):
+        z_tok = _extract_token_from_zip_bytes(zip_bytes)
+        if z_tok:
+            save_config({"token": z_tok})
+
     out = {}
     with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
         infos = [i for i in zf.infolist() if not i.is_dir()]
@@ -187,6 +328,12 @@ def _collect_files_from_zip_bytes(zip_bytes: bytes) -> dict:
 
 
 def _collect_files_from_folder(folder_path: str) -> dict:
+    cfg = load_config()
+    if not cfg.get("token"):
+        f_tok = _discover_git_token([folder_path])
+        if f_tok:
+            save_config({"token": f_tok})
+
     out = {}
     for root, dirs, files in os.walk(folder_path):
         dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
@@ -202,11 +349,26 @@ def _collect_files_from_folder(folder_path: str) -> dict:
     return out
 
 
+def _resolve_target_branch(token: str = "", repo: str = "") -> tuple:
+    for br in ("main", "master"):
+        try:
+            ref_info = gh_api(f"git/ref/heads/{br}", "GET", token=token, repo=repo)
+            if ref_info and "object" in ref_info:
+                return br, ref_info["object"]["sha"]
+        except Exception:
+            continue
+    repo_info = gh_api("", "GET", token=token, repo=repo)
+    def_br = repo_info.get("default_branch") or "main"
+    ref_info = gh_api(f"git/ref/heads/{def_br}", "GET", token=token, repo=repo)
+    return def_br, ref_info["object"]["sha"]
+
+
 def push_file_map_to_github(file_map: dict, commit_msg: str, token: str = "", repo: str = "") -> dict:
     if not file_map:
-        raise ValueError("Нет доступных файлов в папке (0 файлов). Разреши «Доступ ко всем файлам» для Jenny Builder в настройках Android!")
-    ref_info = gh_api("git/ref/heads/main", "GET", token=token, repo=repo)
-    head_sha = ref_info["object"]["sha"]
+        raise ValueError(
+            "Android скрыл файлы в этой папке (0 файлов). Нажми красную кнопку «🔓 Выдать Доступ ко всем файлам» вверху экрана и повтори!"
+        )
+    branch_name, head_sha = _resolve_target_branch(token=token, repo=repo)
     commit_info = gh_api(f"git/commits/{head_sha}", "GET", token=token, repo=repo)
     base_tree_sha = commit_info["tree"]["sha"]
     tree_info = gh_api(f"git/trees/{base_tree_sha}?recursive=1", "GET", token=token, repo=repo)
@@ -267,7 +429,7 @@ def push_file_map_to_github(file_map: dict, commit_msg: str, token: str = "", re
     new_commit_sha = new_commit["sha"]
 
     gh_api(
-        "git/refs/heads/main",
+        f"git/refs/heads/{branch_name}",
         "PATCH",
         {"sha": new_commit_sha, "force": True},
         token=token,
@@ -277,7 +439,25 @@ def push_file_map_to_github(file_map: dict, commit_msg: str, token: str = "", re
         "commit_sha": new_commit_sha[:8],
         "changed_files": changed_count,
         "total_files": len(file_map),
+        "branch": branch_name,
     }
+
+
+def _unpack_zip_bytes_to_folder(zip_bytes: bytes, target_folder: str) -> int:
+    os.makedirs(target_folder, exist_ok=True)
+    fmap = _collect_files_from_zip_bytes(zip_bytes)
+    if not fmap:
+        raise ValueError("В архиве не найдено файлов для распаковки.")
+    written = 0
+    for rel_p, content_b in fmap.items():
+        if rel_p.startswith(".git/") or rel_p == ".git":
+            continue
+        dest_p = os.path.join(target_folder, rel_p)
+        os.makedirs(os.path.dirname(dest_p), exist_ok=True)
+        with open(dest_p, "wb") as f:
+            f.write(content_b)
+        written += 1
+    return written
 
 
 def extract_failed_step_log(raw_log_text: str, step_name: str, started_at: str = "", completed_at: str = "") -> str:
@@ -356,6 +536,14 @@ class BuilderHandler(BaseHTTPRequestHandler):
             cfg = load_config()
             self._send_json({"status": "ok", "config": cfg})
             return
+
+        if path == "/api/rediscover_token":
+            cfg = load_config()
+            tok = _discover_git_token([qs.get("dir", [""])[0], cfg.get("source_dir"), cfg.get("browse_dir")])
+            if tok:
+                cfg = save_config({"token": tok})
+                return self._send_json({"status": "ok", "found": True, "config": cfg})
+            return self._send_json({"status": "ok", "found": False, "config": cfg})
 
         if path == "/api/fs/list":
             cfg = load_config()
@@ -501,7 +689,10 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 zip_path = (data.get("zip_path") or "").strip()
                 commit_msg = (data.get("message") or "").strip() or f"build(zip): push {os.path.basename(zip_path)} via JennyBuilder"
                 if not zip_path or not os.path.isfile(zip_path):
-                    return self._send_json({"status": "error", "error": f"Файл архива не найден: {zip_path}"})
+                    return self._send_json({
+                        "status": "error",
+                        "error": f"Файл архива не найден или нет доступа: {zip_path}. Проверь «Доступ ко всем файлам»!"
+                    })
                 file_map = _collect_files_from_zip_bytes(open(zip_path, "rb").read())
                 res = push_file_map_to_github(file_map, commit_msg)
                 return self._send_json({"status": "ok", **res})
@@ -522,7 +713,10 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 folder_p = (data.get("folder_path") or cfg.get("source_dir") or DEFAULT_PROJECT_DIR).strip()
                 commit_msg = (data.get("message") or "").strip() or f"build(folder): push {os.path.basename(folder_p)} via JennyBuilder"
                 if not os.path.isdir(folder_p):
-                    return self._send_json({"status": "error", "error": f"Папка не найдена: {folder_p}"})
+                    return self._send_json({
+                        "status": "error",
+                        "error": f"Папка не найдена или скрыта Android: {folder_p}. Разреши «Доступ ко всем файлам»!"
+                    })
                 save_config({"source_dir": folder_p})
                 file_map = _collect_files_from_folder(folder_p)
                 res = push_file_map_to_github(file_map, commit_msg)
@@ -567,17 +761,20 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 os.makedirs(save_dir, exist_ok=True)
                 save_config({"save_dir": save_dir})
 
-                runs_data = gh_api("actions/runs?per_page=15", "GET")
+                runs_data = gh_api("actions/runs?conclusion=success&per_page=5", "GET")
                 good_run = None
                 for r in runs_data.get("workflow_runs", []):
                     if r.get("conclusion") == "success":
                         good_run = r
                         break
-                if not good_run:
-                    return self._send_json({"status": "error", "error": "Не найдено ни одной успешной сборки в истории"})
 
-                sha = good_run["head_sha"]
-                bnum = good_run.get("run_number") or sha[:7]
+                if good_run:
+                    sha = good_run["head_sha"]
+                    bnum = good_run.get("run_number") or sha[:7]
+                else:
+                    br, sha = _resolve_target_branch()
+                    bnum = br
+
                 raw_zip_bytes = gh_download_bytes(f"zipball/{sha}")
 
                 repo_short = cfg["repo"].split("/")[-1]
@@ -601,12 +798,54 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     "sha": sha[:7],
                 })
 
+            if path == "/api/pull_to_folder":
+                cfg = load_config()
+                folder_p = (data.get("folder_path") or cfg.get("source_dir") or DEFAULT_PROJECT_DIR).strip()
+                mode = (data.get("mode") or "latest").strip()
+                save_config({"source_dir": folder_p})
+
+                if mode == "last_good":
+                    runs_data = gh_api("actions/runs?conclusion=success&per_page=5", "GET")
+                    good_runs = [r for r in runs_data.get("workflow_runs", []) if r.get("conclusion") == "success"]
+                    if good_runs:
+                        sha = good_runs[0]["head_sha"]
+                    else:
+                        _, sha = _resolve_target_branch()
+                else:
+                    _, sha = _resolve_target_branch()
+
+                raw_zip_bytes = gh_download_bytes(f"zipball/{sha}")
+                written = _unpack_zip_bytes_to_folder(raw_zip_bytes, folder_p)
+                return self._send_json({
+                    "status": "ok",
+                    "folder_path": folder_p,
+                    "written_files": written,
+                    "sha": sha[:7],
+                })
+
+            if path == "/api/unpack_zip_to_folder":
+                cfg = load_config()
+                zip_path = (data.get("zip_path") or "").strip()
+                folder_p = (data.get("folder_path") or cfg.get("source_dir") or DEFAULT_PROJECT_DIR).strip()
+                if not zip_path or not os.path.isfile(zip_path):
+                    return self._send_json({"status": "error", "error": f"Архив не найден: {zip_path}"})
+                save_config({"source_dir": folder_p})
+                written = _unpack_zip_bytes_to_folder(open(zip_path, "rb").read(), folder_p)
+                return self._send_json({
+                    "status": "ok",
+                    "folder_path": folder_p,
+                    "written_files": written,
+                })
+
             if path == "/api/pack_local_folder_zip":
                 cfg = load_config()
                 folder_p = (data.get("folder_path") or cfg.get("source_dir") or DEFAULT_PROJECT_DIR).strip()
                 save_dir = (data.get("save_dir") or cfg.get("save_dir") or DEFAULT_SAVE_DIR).strip()
                 if not os.path.isdir(folder_p):
-                    return self._send_json({"status": "error", "error": f"Папка не найдена: {folder_p}"})
+                    return self._send_json({
+                        "status": "error",
+                        "error": f"Папка не найдена или нет доступа: {folder_p}. Нажми «🔓 Выдать Доступ ко всем файлам»!"
+                    })
                 os.makedirs(save_dir, exist_ok=True)
                 proj_name = os.path.basename(folder_p.rstrip("/")) or "Project"
                 out_zip_path = os.path.join(save_dir, f"{proj_name}_clean_local.zip")
@@ -614,7 +853,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 if not fmap:
                     return self._send_json({
                         "status": "error",
-                        "error": "Android скрыл файлы в этой папке (0 файлов). Разреши «Доступ ко всем файлам» для Jenny Builder в настройках Android и повтори!"
+                        "error": "Android скрыл файлы в этой папке (0 файлов). Нажми «🔓 Выдать Доступ ко всем файлам» вверху экрана и повтори!"
                     })
                 with zipfile.ZipFile(out_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                     for rel_p, content_b in fmap.items():
@@ -628,7 +867,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
 
             self._send_json({"status": "error", "error": "Unknown endpoint"}, 404)
         except Exception as e:
-            self._send_json({"status": "error", "error": f"{e}\n{traceback.format_exc()[-300:]}"})
+            self._send_json({"status": "error", "error": f"{e}"})
 
 
 def start_server():
@@ -643,6 +882,7 @@ def start_server():
 _server_started_flag = False
 _server_lock = _threading_boot.Lock()
 
+
 def ensure_builder_server_running():
     global _server_started_flag
     with _server_lock:
@@ -651,5 +891,6 @@ def ensure_builder_server_running():
         _server_started_flag = True
     t = _threading_boot.Thread(target=start_server, daemon=True)
     t.start()
+
 
 ensure_builder_server_running()
