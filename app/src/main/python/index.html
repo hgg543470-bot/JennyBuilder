@@ -702,12 +702,9 @@ async function pushSelectedZipPath() {
     const d = await r.json();
     if (d.status === 'ok') {
       showStatus(
-        '✅ Архив отправлен в GitHub (' + repo + ')!
-' +
-        '• Описание: «' + d.commit_msg + '»
-' +
-        '• Обновлено файлов: ' + d.changed_files + ' из ' + d.total_files + '
-' +
+        '✅ Архив отправлен в GitHub (' + repo + ')!\n' +
+        '• Описание: «' + d.commit_msg + '»\n' +
+        '• Обновлено файлов: ' + d.changed_files + ' из ' + d.total_files + '\n' +
         '• Запущена новая сборка APK — её номер и этапы появятся ниже через пару секунд!',
         false
       );
@@ -739,12 +736,9 @@ function pushSystemFileZip(inputEl) {
       const d = await r.json();
       if (d.status === 'ok') {
         showStatus(
-          '✅ Архив ' + file.name + ' отправлен в GitHub (' + repo + ')!
-' +
-          '• Описание: «' + d.commit_msg + '»
-' +
-          '• Обновлено файлов: ' + d.changed_files + ' из ' + d.total_files + '
-' +
+          '✅ Архив ' + file.name + ' отправлен в GitHub (' + repo + ')!\n' +
+          '• Описание: «' + d.commit_msg + '»\n' +
+          '• Обновлено файлов: ' + d.changed_files + ' из ' + d.total_files + '\n' +
           '• Запущена новая сборка APK!',
           false
         );
@@ -778,16 +772,11 @@ async function pushLocalFolder() {
     const d = await r.json();
     if (d.status === 'ok') {
       showStatus(
-        '✅ Экспорт папки завершён!
-' +
-        '• Откуда: ' + fp + '
-' +
-        '• Куда: GitHub (' + repo + ')
-' +
-        '• Описание: «' + d.commit_msg + '»
-' +
-        '• Обновлено файлов: ' + d.changed_files + ' из ' + d.total_files + '
-' +
+        '✅ Экспорт папки завершён!\n' +
+        '• Откуда: ' + fp + '\n' +
+        '• Куда: GitHub (' + repo + ')\n' +
+        '• Описание: «' + d.commit_msg + '»\n' +
+        '• Обновлено файлов: ' + d.changed_files + ' из ' + d.total_files + '\n' +
         '• Сборка APK запущена — следи за прогрессом внизу!',
         false
       );
@@ -817,12 +806,9 @@ async function pullFromGithubToFolder() {
     const d = await r.json();
     if (d.status === 'ok') {
       showStatus(
-        '✅ Импорт с GitHub в рабочую папку завершён!
-' +
-        '• Что скачано: ' + (d.human_label || ('Сборка #' + d.build_number)) + '
-' +
-        '• Куда распаковано: ' + d.folder_path + '
-' +
+        '✅ Импорт с GitHub в рабочую папку завершён!\n' +
+        '• Что скачано: ' + (d.human_label || ('Сборка #' + d.build_number)) + '\n' +
+        '• Куда распаковано: ' + d.folder_path + '\n' +
         '• Обновлено файлов: ' + d.written_files,
         false
       );
@@ -855,12 +841,9 @@ async function unpackSelectedZipToFolder() {
     const d = await r.json();
     if (d.status === 'ok') {
       showStatus(
-        '✅ Архив успешно распакован в рабочую папку!
-' +
-        '• Из архива: ' + d.zip_path + '
-' +
-        '• В рабочую папку: ' + d.folder_path + '
-' +
+        '✅ Архив успешно распакован в рабочую папку!\n' +
+        '• Из архива: ' + d.zip_path + '\n' +
+        '• В рабочую папку: ' + d.folder_path + '\n' +
         '• Записано файлов: ' + d.written_files,
         false
       );
@@ -891,10 +874,8 @@ async function packLocalFolderToZip() {
       document.getElementById('selectedZipPath').value = d.zip_path;
       updateButtonLabels();
       showStatus(
-        '✅ Рабочая папка упакована в чистый .zip!
-' +
-        '• Из папки: ' + d.folder_path + ' (файлов: ' + d.files_count + ')
-' +
+        '✅ Рабочая папка упакована в чистый .zip!\n' +
+        '• Из папки: ' + d.folder_path + ' (файлов: ' + d.files_count + ')\n' +
         '• Куда сохранён архив: ' + d.zip_path + ' (' + d.size_mb + ' МБ)',
         false
       );
@@ -924,10 +905,8 @@ async function downloadLastGoodZip() {
       document.getElementById('selectedZipPath').value = d.zip_path;
       updateButtonLabels();
       showStatus(
-        '✅ Чистый .zip архив скачан с GitHub!
-' +
-        '• Что скачано: ' + (d.human_label || ('Сборка #' + d.build_number)) + '
-' +
+        '✅ Чистый .zip архив скачан с GitHub!\n' +
+        '• Что скачано: ' + (d.human_label || ('Сборка #' + d.build_number)) + '\n' +
         '• Куда сохранён файл: ' + d.zip_path + ' (' + d.size_mb + ' МБ)',
         false
       );
@@ -956,10 +935,8 @@ async function downloadRunApk(runId, runNum, verTag) {
     const d = await r.json();
     if (d.status === 'ok') {
       showStatus(
-        '✅ Готовый APK успешно скачан!
-' +
-        '• Сборка: #' + runNum + verLabel + '
-' +
+        '✅ Готовый APK успешно скачан!\n' +
+        '• Сборка: #' + runNum + verLabel + '\n' +
         '• Файл сохранён в: ' + d.apk_path + ' (' + d.size_mb + ' МБ)',
         false
       );
@@ -1018,7 +995,7 @@ async function loadRuns() {
       html += '    <div style="font-size:10px;color:#8b949e;">Дата: ' + item.created_at + ' • (ID коммита в Git: ' + item.head_sha + ')</div>';
       html += '  </div>';
       if (item.conclusion === 'success') {
-        html += '  <button class="btn btn-green" style="width:auto;padding:6px 9px;font-size:11px;white-space:nowrap;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', '' + safeVer + '')">📥 APK #' + item.run_number + '<span style="display:block;font-size:9px;font-weight:normal;">в ' + saveFolderShort + '</span></button>';
+        html += '  <button class="btn btn-green" style="width:auto;padding:6px 9px;font-size:11px;white-space:nowrap;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', \'' + safeVer + '\')">📥 APK #' + item.run_number + '<span style="display:block;font-size:9px;font-weight:normal;">в ' + saveFolderShort + '</span></button>';
       } else if (item.conclusion === 'failure') {
         html += '  <button class="btn btn-red" style="width:auto;padding:6px 9px;font-size:11px;white-space:nowrap;" onclick="event.stopPropagation();selectRun(' + item.id + ')">🔍 Ошибка<span style="display:block;font-size:9px;font-weight:normal;">Сборка #' + item.run_number + '</span></button>';
       }
