@@ -166,83 +166,24 @@
 
 <!-- КОМПАКТНАЯ ВЕРХНЯЯ ПЛАШКА (ПОЯВЛЯЕТСЯ КОГДА ВЕРХНЯЯ КАРТОЧКА УХОДИТ ИЗ ПОЛЯ ЗРЕНИЯ) -->
 <div id="compactTopBar" class="compact-top-bar">
-  <div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;" onclick="window.scrollTo({top:0,behavior:'smooth'});showStatus('⬆️ Возврат к верхней панели настроек и версий',false);">
-    <b style="color:#d2a8ff;">🛠️ JB</b>
-    <span style="color:#8b949e;">|</span>
-    <span id="compactInstTxt" style="color:#7ee787;font-weight:700;overflow:hidden;text-overflow:ellipsis;">🎵 Проверка...</span>
-    <span style="color:#8b949e;">|</span>
-    <span id="compactRepoTxt" style="color:#79c0ff;font-size:10.5px;overflow:hidden;text-overflow:ellipsis;">...</span>
+  <div style="display:flex;flex-direction:column;gap:3px;min-width:0;flex:1;cursor:pointer;" onclick="window.scrollTo({top:0,behavior:'smooth'});showStatus('⬆️ Возврат к верхней панели настроек и версий',false);">
+    <div style="display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;font-size:11.5px;">
+      <span style="color:#8b949e;flex-shrink:0;">Репо:</span>
+      <b id="compactRepoTxt" style="color:#fff;overflow:hidden;text-overflow:ellipsis;">...</b>
+      <span style="color:#8b949e;flex-shrink:0;">|</span>
+      <b id="compactInstTxt" style="color:#7ee787;flex-shrink:0;">Сборка: ...</b>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;font-size:11px;">
+      <span style="color:#8b949e;flex-shrink:0;">Токен:</span>
+      <b id="compactTokenTxt" style="color:#3fb950;flex-shrink:0;">...</b>
+      <span id="compactFreshWrap" style="display:none;color:#7ee787;font-weight:700;flex-shrink:0;">| ✅ Свежая сборка</span>
+    </div>
   </div>
   <div style="display:flex;gap:5px;flex-shrink:0;">
-    <button class="btn" style="width:auto;padding:3px 7px;font-size:10.5px;" onclick="refreshInstalledVersion()">🔄</button>
-    <button class="btn btn-purple" style="width:auto;padding:3px 8px;font-size:10.5px;" onclick="window.scrollTo({top:0,behavior:'smooth'});setTimeout(()=>{const el=document.getElementById('settingsArea');if(el&&el.style.display==='none')toggleSettings();},250);">⚙️</button>
+    <button class="btn" style="width:auto;padding:4px 7px;font-size:10.5px;" onclick="refreshInstalledVersion()">🔄</button>
+    <button class="btn btn-purple" style="width:auto;padding:4px 8px;font-size:10.5px;" onclick="window.scrollTo({top:0,behavior:'smooth'});setTimeout(()=>{const el=document.getElementById('settingsArea');if(el&&el.style.display==='none')toggleSettings();},220);">⚙️</button>
   </div>
 </div>
-
-<!-- ЖИВАЯ ШКАЛА ВЫПОЛНЯЕМЫХ ДЕЙСТВИЙ (PROGRESS BAR) С КНОПКОЙ ОТМЕНЫ СКАЧИВАНИЯ -->
-<div id="liveProgressBanner" class="prog-wrap">
-  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11.5px;font-weight:bold;color:#79c0ff;">
-    <span id="progTitleTxt" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">⏳ Выполнение...</span>
-    <span id="progPctTxt" style="color:#7ee787;flex-shrink:0;">0% • 0.0 сек</span>
-    <button id="btnCancelDownload" class="btn btn-red" style="display:none;width:auto;padding:3px 9px;font-size:10.5px;border-radius:7px;flex-shrink:0;" onclick="cancelActiveDownload()">⏹ Отмена</button>
-  </div>
-  <div class="prog-track">
-    <div id="progBarFill" class="prog-fill"></div>
-  </div>
-  <div id="progDetailTxt" style="font-size:10.5px;color:#c9d1d9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Подготовка...</div>
-</div>
-
-<!-- БАННЕР РАЗРЕШЕНИЯ ДОСТУПА К ФАЙЛАМ ANDROID 11-16 -->
-<div id="permBanner" class="perm-banner">
-  <div style="font-weight:bold;color:#ffa198;font-size:12px;margin-bottom:6px;">
-    ⚠️ Нет доступа к файлам Android (MANAGE_EXTERNAL_STORAGE)
-  </div>
-  <div style="font-size:11px;color:#e6edf3;margin-bottom:8px;">
-    В HyperOS / MIUI этот тумблер спрятан в «Специальном доступе». Нажми кнопку ниже — откроется прямое системное окно тумблера для Jenny Builder:
-  </div>
-  <button class="btn btn-red" onclick="requestAndroidStoragePerm()">
-    🔓 Выдать «Доступ ко всем файлам» (1 клик)
-  </button>
-</div>
-
-<div class="card" id="topHeaderCard">
-  <div class="card-title">
-    <span>🛠️ JENNY BUILDER v1.8</span>
-    <button class="btn" style="width:auto;padding:4px 8px;font-size:11px;" onclick="toggleSettings()">⚙️ Настройки</button>
-  </div>
-  <div id="settingsArea" style="display:none;margin-top:6px;border-top:1px solid #30363d;padding-top:8px;">
-    <div style="font-size:11px;color:#8b949e;margin-bottom:3px;">Репозиторий GitHub (owner/repo):</div>
-    <input type="text" id="cfgRepo" placeholder="hgg543470-bot/JennyPlayer" oninput="updateButtonLabels()">
-    <div style="font-size:11px;color:#8b949e;margin-bottom:3px;">Токен GitHub (подхватывается из .git/config или хранится во внутренней памяти):</div>
-    <input type="password" id="cfgToken" placeholder="ghp_... или github_pat_...">
-    <div class="grid2" style="margin-bottom:6px;">
-      <button class="btn btn-blue" onclick="saveSettings()">💾 Сохранить настройки</button>
-      <button class="btn btn-purple" onclick="rediscoverGitToken()">🔍 Найти в .git/config</button>
-    </div>
-    <button class="btn" style="font-size:11px;padding:6px;" onclick="requestAndroidStoragePerm()">
-      🔓 Открыть системный тумблер «Доступ ко всем файлам»
-    </button>
-  </div>
-  <div style="font-size:11px;color:#8b949e;line-height:1.5;">
-    Репо: <b id="lblRepo" style="color:#fff;">...</b> |
-    Токен: <b id="lblTokenState" style="color:#3fb950;">...</b> |
-    Файлы: <b id="lblStoragePerm" style="color:#3fb950;" onclick="requestAndroidStoragePerm()">...</b>
-  </div>
-
-  <!-- БЛОК ОПРЕДЕЛЕНИЯ УСТАНОВЛЕННОЙ НА ТЕЛЕФОНЕ ВЕРСИИ -->
-  <div class="lp-box" id="installedStatusBox">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-      <b style="color:#7ee787;font-size:12px;">📲 ЧТО СЕЙЧАС УСТАНОВЛЕНО НА ТЕЛЕФОНЕ:</b>
-      <button class="btn" style="width:auto;padding:3px 8px;font-size:10px;" onclick="refreshInstalledVersion()">🔄 Проверить</button>
-    </div>
-    <div style="font-size:11.5px;line-height:1.45;">
-      <div>🎵 <b>Jenny Player:</b> <span id="instPlayerMain" style="color:#fff;font-weight:bold;">проверка...</span></div>
-      <div id="instPlayerSub" style="font-size:10.5px;color:#8b949e;margin-bottom:4px;"></div>
-      <div style="border-top:1px dashed #233829;padding-top:4px;font-size:10.5px;color:#8b949e;">
-        🛠️ <b>Jenny Builder:</b> <span id="instBuilderMain" style="color:#d2a8ff;">проверка...</span>
-      </div>
-    </div>
-  </div>
 </div>
 
 <!-- 1. РАБОТА С АРХИВОМ, ПАПКОЙ И ДВУСТОРОННИМ GIT DIFF -->
@@ -518,6 +459,48 @@ let progressPollTimer = null;
 let isCurrentTaskCancellable = false;
 let topHeaderObserverInit = false;
 
+function updateCompactTopBarUi() {
+  try {
+    const repoInp = document.getElementById('cfgRepo');
+    const lblRepo = document.getElementById('lblRepo');
+    const repoVal = ((repoInp && repoInp.value) || (lblRepo && lblRepo.textContent) || '').trim() || 'не задан';
+    const tokInp = document.getElementById('cfgToken');
+    const hasTok = Boolean(tokInp && tokInp.value && tokInp.value.trim());
+
+    const cRepo = document.getElementById('compactRepoTxt');
+    if (cRepo) cRepo.textContent = repoVal;
+
+    const cTok = document.getElementById('compactTokenTxt');
+    if (cTok) {
+      cTok.textContent = hasTok ? 'Подключён ✅' : 'Не подключён ❌';
+      cTok.style.color = hasTok ? '#3fb950' : '#ff7b72';
+    }
+
+    const p = (currentInstalledState && currentInstalledState.player) ? currentInstalledState.player : {};
+    const cInst = document.getElementById('compactInstTxt');
+    const cFresh = document.getElementById('compactFreshWrap');
+
+    if (cInst) {
+      if (!p.installed) {
+        cInst.textContent = 'Не установлен ❌';
+        cInst.style.color = '#ff7b72';
+      } else {
+        cInst.textContent = p.build_number ? ('Сборка #' + p.build_number) : ('v' + (p.versionName || '?'));
+        cInst.style.color = '#7ee787';
+      }
+    }
+
+    if (cFresh) {
+      let latestNum = (latestGoodBuildInfo && latestGoodBuildInfo.run_number) ? latestGoodBuildInfo.run_number : null;
+      if (!latestNum && allLoadedRuns && allLoadedRuns.length > 0) {
+        latestNum = allLoadedRuns[0].run_number;
+      }
+      const isFresh = Boolean(p.installed && p.build_number && latestNum && Number(p.build_number) >= Number(latestNum));
+      cFresh.style.display = isFresh ? 'inline' : 'none';
+    }
+  } catch (e) {}
+}
+
 function syncTopBarsLayout() {
   const topCard = document.getElementById('topHeaderCard');
   const compactBar = document.getElementById('compactTopBar');
@@ -527,7 +510,7 @@ function syncTopBarsLayout() {
   const outOfView = (rect.bottom <= 4);
   compactBar.style.display = outOfView ? 'flex' : 'none';
   if (progBanner) {
-    progBanner.style.top = outOfView ? '44px' : '6px';
+    progBanner.style.top = outOfView ? ((compactBar.getBoundingClientRect().bottom + 4) + 'px') : '6px';
   }
   if (!topHeaderObserverInit && typeof IntersectionObserver !== 'undefined') {
     topHeaderObserverInit = true;
@@ -731,6 +714,7 @@ function swapComparisonSides() {
   compareBaseSpec = compareTargetSpec;
   compareTargetSpec = tmpSpec;
   refreshCompareLabelsUi();
+  if (typeof updateCompactTopBarUi === 'function') updateCompactTopBarUi();
   showStatus('⇅ Направление сравнения перевёрнуто: теперь сравниваем «' + compareBaseLabel + '» ➔ «' + compareTargetLabel + '»', false);
 }
 
@@ -805,6 +789,7 @@ function selectCompareOption(spec) {
     compareTargetSpec = spec;
   }
   refreshCompareLabelsUi();
+  if (typeof updateCompactTopBarUi === 'function') updateCompactTopBarUi();
   closeComparePicker();
   const chosenLbl = (activeComparePickerSide === 'base') ? compareBaseLabel : compareTargetLabel;
   showStatus('🔬 Выбран ' + sideName + ' для сравнения:\n• ' + chosenLbl, false);
@@ -947,6 +932,7 @@ function renderInstalledStatus(inst) {
       }
     }
     refreshCompareLabelsUi();
+  if (typeof updateCompactTopBarUi === 'function') updateCompactTopBarUi();
     syncTopBarsLayout();
   } catch (e) {}
 }
@@ -1004,6 +990,7 @@ function updateButtonLabels() {
       '✅ Скачать чистый .zip архив Сборки #' + latestGoodBuildInfo.run_number + ' с GitHub';
   }
   refreshCompareLabelsUi();
+  if (typeof updateCompactTopBarUi === 'function') updateCompactTopBarUi();
 }
 
 async function runSelectedComparison() {
