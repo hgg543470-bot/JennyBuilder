@@ -184,6 +184,71 @@
     <button class="btn btn-purple" style="width:auto;padding:4px 8px;font-size:10.5px;" onclick="window.scrollTo({top:0,behavior:'smooth'});setTimeout(()=>{const el=document.getElementById('settingsArea');if(el&&el.style.display==='none')toggleSettings();},220);">⚙️</button>
   </div>
 </div>
+
+<!-- ЖИВАЯ ШКАЛА ВЫПОЛНЯЕМЫХ ДЕЙСТВИЙ (PROGRESS BAR) С КНОПКОЙ ОТМЕНЫ СКАЧИВАНИЯ -->
+<div id="liveProgressBanner" class="prog-wrap">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11.5px;font-weight:bold;color:#79c0ff;">
+    <span id="progTitleTxt" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">⏳ Выполнение...</span>
+    <span id="progPctTxt" style="color:#7ee787;flex-shrink:0;">0% • 0.0 сек</span>
+    <button id="btnCancelDownload" class="btn btn-red" style="display:none;width:auto;padding:3px 9px;font-size:10.5px;border-radius:7px;flex-shrink:0;" onclick="cancelActiveDownload()">⏹ Отмена</button>
+  </div>
+  <div class="prog-track">
+    <div id="progBarFill" class="prog-fill"></div>
+  </div>
+  <div id="progDetailTxt" style="font-size:10.5px;color:#c9d1d9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Подготовка...</div>
+</div>
+
+<!-- БАННЕР РАЗРЕШЕНИЯ ДОСТУПА К ФАЙЛАМ ANDROID 11-16 -->
+<div id="permBanner" class="perm-banner">
+  <div style="font-weight:bold;color:#ffa198;font-size:12px;margin-bottom:6px;">
+    ⚠️ Нет доступа к файлам Android (MANAGE_EXTERNAL_STORAGE)
+  </div>
+  <div style="font-size:11px;color:#e6edf3;margin-bottom:8px;">
+    В HyperOS / MIUI этот тумблер спрятан в «Специальном доступе». Нажми кнопку ниже — откроется прямое системное окно тумблера для Jenny Builder:
+  </div>
+  <button class="btn btn-red" onclick="requestAndroidStoragePerm()">
+    🔓 Выдать «Доступ ко всем файлам» (1 клик)
+  </button>
+</div>
+
+<div class="card" id="topHeaderCard">
+  <div class="card-title">
+    <span>🛠️ JENNY BUILDER v1.8</span>
+    <button class="btn" style="width:auto;padding:4px 8px;font-size:11px;" onclick="toggleSettings()">⚙️ Настройки</button>
+  </div>
+  <div id="settingsArea" style="display:none;margin-top:6px;border-top:1px solid #30363d;padding-top:8px;">
+    <div style="font-size:11px;color:#8b949e;margin-bottom:3px;">Репозиторий GitHub (owner/repo):</div>
+    <input type="text" id="cfgRepo" placeholder="hgg543470-bot/JennyPlayer" oninput="updateButtonLabels()">
+    <div style="font-size:11px;color:#8b949e;margin-bottom:3px;">Токен GitHub (подхватывается из .git/config или хранится во внутренней памяти):</div>
+    <input type="password" id="cfgToken" placeholder="ghp_... или github_pat_...">
+    <div class="grid2" style="margin-bottom:6px;">
+      <button class="btn btn-blue" onclick="saveSettings()">💾 Сохранить настройки</button>
+      <button class="btn btn-purple" onclick="rediscoverGitToken()">🔍 Найти в .git/config</button>
+    </div>
+    <button class="btn" style="font-size:11px;padding:6px;" onclick="requestAndroidStoragePerm()">
+      🔓 Открыть системный тумблер «Доступ ко всем файлам»
+    </button>
+  </div>
+  <div style="font-size:11px;color:#8b949e;line-height:1.5;">
+    Репо: <b id="lblRepo" style="color:#fff;">...</b> |
+    Токен: <b id="lblTokenState" style="color:#3fb950;">...</b> |
+    Файлы: <b id="lblStoragePerm" style="color:#3fb950;" onclick="requestAndroidStoragePerm()">...</b>
+  </div>
+
+  <!-- БЛОК ОПРЕДЕЛЕНИЯ УСТАНОВЛЕННОЙ НА ТЕЛЕФОНЕ ВЕРСИИ -->
+  <div class="lp-box" id="installedStatusBox">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+      <b style="color:#7ee787;font-size:12px;">📲 ЧТО СЕЙЧАС УСТАНОВЛЕНО НА ТЕЛЕФОНЕ:</b>
+      <button class="btn" style="width:auto;padding:3px 8px;font-size:10px;" onclick="refreshInstalledVersion()">🔄 Проверить</button>
+    </div>
+    <div style="font-size:11.5px;line-height:1.45;">
+      <div>🎵 <b>Jenny Player:</b> <span id="instPlayerMain" style="color:#fff;font-weight:bold;">проверка...</span></div>
+      <div id="instPlayerSub" style="font-size:10.5px;color:#8b949e;margin-bottom:4px;"></div>
+      <div style="border-top:1px dashed #233829;padding-top:4px;font-size:10.5px;color:#8b949e;">
+        🛠️ <b>Jenny Builder:</b> <span id="instBuilderMain" style="color:#d2a8ff;">проверка...</span>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- 1. РАБОТА С АРХИВОМ, ПАПКОЙ И ДВУСТОРОННИМ GIT DIFF -->
@@ -476,7 +541,8 @@ function updateCompactTopBarUi() {
       cTok.style.color = hasTok ? '#3fb950' : '#ff7b72';
     }
 
-    const p = (currentInstalledState && currentInstalledState.player) ? currentInstalledState.player : {};
+    const isBuilderRepo = (repoVal.toLowerCase().indexOf('builder') !== -1);
+    const p = currentInstalledState ? ((isBuilderRepo ? currentInstalledState.builder : currentInstalledState.player) || {}) : {};
     const cInst = document.getElementById('compactInstTxt');
     const cFresh = document.getElementById('compactFreshWrap');
 
@@ -1040,8 +1106,14 @@ async function runSelectedComparison() {
       if (!document.getElementById('commitMsgInput').value.trim() && lastDiffShortCommit && d.has_changes) {
         document.getElementById('commitMsgInput').value = lastDiffShortCommit;
       }
+      showStatus(
+        '✅ Git-сравнение (А ➔ Б) завершено на 100%!\n' +
+        '• Изменено файлов: ' + d.modified_count + ' | Новых: ' + d.added_count + ' | Удалено: ' + d.removed_count,
+        false
+      );
     } else {
       pre.textContent = '❌ Ошибка сравнения: ' + d.error;
+      showStatus('❌ Ошибка сравнения: ' + d.error, true);
     }
   } catch (e) {
     stopProgressPolling();
