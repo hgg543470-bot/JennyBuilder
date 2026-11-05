@@ -9,9 +9,11 @@ import base64
 import hashlib
 import zipfile
 import traceback
+import http.client
 import urllib.request
 import urllib.parse
 import urllib.error
+import threading as _threading_boot
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 8795
@@ -26,7 +28,6 @@ EXCLUDE_FILES = {"omni_full_trace.log", "omni_simple.log", "shizuku_window_dump.
 
 
 class _NoAuthRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Убирает заголовок Authorization при редиректе с api.github.com на хранилище Azure (иначе Azure отдаёт 400/403)."""
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
         if new_req is not None:
@@ -74,7 +75,15 @@ def load_config():
         except Exception:
             pass
     if not cfg.get("token"):
-        cfg["token"] = _discover_git_token()
+        discovered = _discover_git_token()
+        if discovered:
+            cfg["token"] = discovered
+            try:
+                os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+                with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
     return cfg
 
 
@@ -97,7 +106,7 @@ def gh_api(endpoint: str, method: str = "GET", payload: dict = None, token: str 
     url = endpoint if endpoint.startswith("http") else f"https://api.github.com/repos/{rep}/{endpoint.lstrip('/')}"
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "JennyBuilder-Android/1.0",
+        "User-Agent": "JennyBuilder-Android/1.1",
     }
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
@@ -121,14 +130,27 @@ def gh_download_bytes(endpoint: str, token: str = "", repo: str = "") -> bytes:
     url = endpoint if endpoint.startswith("http") else f"https://api.github.com/repos/{rep}/{endpoint.lstrip('/')}"
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "JennyBuilder-Android/1.0",
+        "User-Agent": "JennyBuilder-Android/1.1",
     }
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
-    req = urllib.request.Request(url, headers=headers, method="GET")
-    opener = urllib.request.build_opener(_NoAuthRedirectHandler())
-    with opener.open(req, timeout=120) as resp:
-        return resp.read()
+    last_err = None
+    for attempt in range(4):
+        try:
+            req = urllib.request.Request(url, headers=headers, method="GET")
+            opener = urllib.request.build_opener(_NoAuthRedirectHandler())
+            with opener.open(req, timeout=180) as resp:
+                buf = bytearray()
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    buf.extend(chunk)
+                return bytes(buf)
+        except Exception as e:
+            last_err = e
+            time.sleep(1.5)
+    raise RuntimeError(f"Не удалось докачать поток после 4 попыток: {last_err}")
 
 
 def _git_blob_sha1(data: bytes) -> str:
@@ -137,17 +159,16 @@ def _git_blob_sha1(data: bytes) -> str:
 
 
 def _collect_files_from_zip_bytes(zip_bytes: bytes) -> dict:
-    """Возвращает словарь {rel_path: bytes} из архива .zip, автоматически убирая общую корневую папку, если она есть."""
     out = {}
     with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
         infos = [i for i in zf.infolist() if not i.is_dir()]
-        raw_Paths = [i.filename.replace("\\", "/").lstrip("/") for i in infos]
-        top_Segs = {p.split("/", 1)[0] for p in raw_Paths if "/" in p}
+        raw_paths = [i.filename.replace("\\", "/").lstrip("/") for i in infos]
+        top_segs = {p.split("/", 1)[0] for p in raw_paths if "/" in p}
         strip_prefix = ""
-        if len(top_Segs) == 1:
-            only_top = list(top_Segs)[0]
+        if len(top_segs) == 1:
+            only_top = list(top_segs)[0]
             if only_top not in ("app", ".github", "res", "src"):
-                if all(p.startswith(only_top + "/") for p in raw_Paths):
+                if all(p.startswith(only_top + "/") for p in raw_paths):
                     strip_prefix = only_top + "/"
         for info in infos:
             rel = info.filename.replace("\\", "/").lstrip("/")
@@ -174,13 +195,16 @@ def _collect_files_from_folder(folder_path: str) -> dict:
                 continue
             full_p = os.path.join(root, f)
             rel_p = os.path.relpath(full_p, folder_path).replace("\\", "/")
-            out[rel_p] = open(full_p, "rb").read()
+            try:
+                out[rel_p] = open(full_p, "rb").read()
+            except Exception:
+                pass
     return out
 
 
 def push_file_map_to_github(file_map: dict, commit_msg: str, token: str = "", repo: str = "") -> dict:
     if not file_map:
-        raise ValueError("Нет файлов для отправки")
+        raise ValueError("Нет доступных файлов в папке (0 файлов). Разреши «Доступ ко всем файлам» для Jenny Builder в настройках Android!")
     ref_info = gh_api("git/ref/heads/main", "GET", token=token, repo=repo)
     head_sha = ref_info["object"]["sha"]
     commit_info = gh_api(f"git/commits/{head_sha}", "GET", token=token, repo=repo)
@@ -257,12 +281,19 @@ def push_file_map_to_github(file_map: dict, commit_msg: str, token: str = "", re
 
 
 def extract_failed_step_log(raw_log_text: str, step_name: str, started_at: str = "", completed_at: str = "") -> str:
-    """Вырезает из полного лога GitHub Actions конкретный этап с ошибкой в конце."""
     lines = raw_log_text.splitlines()
     if not lines:
         return "Лог пуст."
 
-    # 1. Если есть таймстампы начала и конца упавшего шага (формат 2026-11-05T08:15:22)
+    err_highlights = [
+        l for l in lines
+        if any(k in l for k in ("##[error]", "FAILURE:", "What went wrong:", "> Task ", "Exception:", "Error:", "error:"))
+    ][-25:]
+    summary_top = (
+        "--- 🎯 КРАТКАЯ СУТЬ ОШИБКИ ---\n" + "\n".join(err_highlights) + "\n------------------------------\n\n"
+    ) if err_highlights else ""
+    header = f"=== ❌ ЭТАП С ОШИБКОЙ: {step_name} ===\n" + summary_top
+
     start_prefix = (started_at or "")[:19]
     end_prefix = (completed_at or "")[:19]
     if start_prefix and len(start_prefix) == 19:
@@ -274,17 +305,14 @@ def extract_failed_step_log(raw_log_text: str, step_name: str, started_at: str =
                 if ts >= start_prefix:
                     capturing = True
                 if end_prefix and ts > end_prefix and len(sliced) > 10:
-                    # Захватываем еще строки с ##[error] в самом конце шага
                     if "##[error]" in ln or "Error:" in ln or "FAILURE:" in ln or "Exception" in ln:
                         sliced.append(ln)
                     continue
             if capturing:
                 sliced.append(ln)
         if len(sliced) >= 5:
-            header = f"=== ❌ ЭТАП С ОШИБКОЙ: {step_name} ===\n"
             return header + "\n".join(sliced[-350:])
 
-    # 2. Фолбэк: ищем последний блок ##[group] перед ##[error] / FAILURE
     err_indices = [i for i, ln in enumerate(lines) if ("##[error]" in ln or "FAILURE:" in ln or "Execution failed for task" in ln)]
     end_idx = err_indices[-1] + 25 if err_indices else len(lines)
     end_idx = min(len(lines), end_idx)
@@ -293,7 +321,6 @@ def extract_failed_step_log(raw_log_text: str, step_name: str, started_at: str =
         if "##[group]" in lines[i]:
             start_idx = i
             break
-    header = f"=== ❌ ЭТАП С ОШИБКОЙ: {step_name} ===\n"
     return header + "\n".join(lines[start_idx:end_idx])
 
 
@@ -380,7 +407,6 @@ class BuilderHandler(BaseHTTPRequestHandler):
                         "created_at": (r.get("created_at") or "").replace("T", " ")[:19],
                     })
 
-                # Для самого верхнего (или выбранного) запуска подгружаем детальную разбивку по этапам (steps)
                 target_run_id = qs.get("run_id", [""])[0]
                 if not target_run_id and runs_list:
                     target_run_id = str(runs_list[0]["id"])
@@ -558,7 +584,6 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 out_zip_name = f"{repo_short}_clean_b{bnum}_{sha[:7]}.zip"
                 out_zip_path = os.path.join(save_dir, out_zip_name)
 
-                # Очищаем верхнюю техническую папку коммита внутри архива GitHub, чтобы структура была 1:1
                 with zipfile.ZipFile(io.BytesIO(raw_zip_bytes), "r") as zin, zipfile.ZipFile(out_zip_path, "w", zipfile.ZIP_DEFLATED) as zout:
                     for item in zin.infolist():
                         parts = item.filename.split("/", 1)
@@ -586,6 +611,11 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 proj_name = os.path.basename(folder_p.rstrip("/")) or "Project"
                 out_zip_path = os.path.join(save_dir, f"{proj_name}_clean_local.zip")
                 fmap = _collect_files_from_folder(folder_p)
+                if not fmap:
+                    return self._send_json({
+                        "status": "error",
+                        "error": "Android скрыл файлы в этой папке (0 файлов). Разреши «Доступ ко всем файлам» для Jenny Builder в настройках Android и повтори!"
+                    })
                 with zipfile.ZipFile(out_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                     for rel_p, content_b in fmap.items():
                         zf.writestr(rel_p, content_b)
@@ -610,13 +640,6 @@ def start_server():
         print("Server bind info:", e)
 
 
-if __name__ == "__main__":
-    start_server()
-
-
-
-# === Автозапуск сервера и совместимость с точками входа MainActivity / PlaybackService ===
-import threading as _threading_boot
 _server_started_flag = False
 _server_lock = _threading_boot.Lock()
 
