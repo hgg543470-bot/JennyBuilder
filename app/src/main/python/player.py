@@ -866,6 +866,149 @@ def _compact_unified_diff(old_str: str, new_str: str) -> list:
     return out
 
 
+def download_build_source_zip_custom(
+    target_id: str = "",
+    skip_so: bool = False,
+    save_dir: str = "",
+    token: str = "",
+    repo: str = "",
+) -> dict:
+    cfg = load_config()
+    tok = (token or cfg.get("token") or "").strip()
+    rep = (repo or cfg.get("repo") or DEFAULT_REPO).strip()
+    out_dir = (save_dir or cfg.get("save_dir") or DEFAULT_SAVE_DIR).strip()
+    os.makedirs(out_dir, exist_ok=True)
+
+    runs_data = gh_api("actions/runs?per_page=60", "GET", token=tok, repo=rep)
+    runs = runs_data.get("workflow_runs") or []
+    if not runs:
+        raise RuntimeError("Сборки в репозитории не найдены.")
+
+    run_obj = None
+    t_str = str(target_id or "").strip()
+    if t_str and t_str not in ("last_good", "latest"):
+        for r in runs:
+            if (
+                str(r.get("id")) == t_str
+                or str(r.get("run_number")) == t_str
+                or (r.get("head_sha") or "").startswith(t_str)
+            ):
+                run_obj = r
+                break
+        if not run_obj and re.fullmatch(r"[0-9a-fA-F]{7,40}", t_str):
+            run_obj = {"head_sha": t_str, "run_number": t_str[:7], "display_title": f"Commit {t_str[:7]}"}
+    else:
+        for r in runs:
+            if r.get("conclusion") == "success":
+                run_obj = r
+                break
+        if not run_obj:
+            run_obj = runs[0]
+
+    if not run_obj:
+        raise RuntimeError(f"Сборка '{t_str}' не найдена в истории GitHub Actions.")
+
+    sha = run_obj.get("head_sha") or ""
+    bnum = run_obj.get("run_number") or sha[:7]
+    title = run_obj.get("display_title") or ""
+
+    raw_zip = gh_download_bytes(
+        f"zipball/{sha}",
+        token=tok,
+        repo=rep,
+        task_title=f"Скачивание исходников #{bnum}" + (" (без .so)" if skip_so else " (полный)"),
+        threads=32,
+    )
+
+    repo_short = rep.split("/")[-1] if "/" in rep else rep
+    suffix = "src_no_so" if skip_so else "full_src"
+    fname = f"{repo_short}_#{bnum}_{suffix}.zip"
+    out_zip_path = os.path.join(out_dir, fname)
+
+    skipped_so = []
+    kept_native_sources = []
+    native_src_exts = {".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".go", ".rs", ".mk"}
+
+    with zipfile.ZipFile(io.BytesIO(raw_zip), "r") as zin, zipfile.ZipFile(
+        out_zip_path, "w", zipfile.ZIP_DEFLATED
+    ) as zout:
+        for item in zin.infolist():
+            parts = item.filename.split("/", 1)
+            if len(parts) < 2 or not parts[1] or parts[1].endswith("/"):
+                continue
+            rel_path = parts[1]
+            ext = os.path.splitext(rel_path)[1].lower()
+            data_bytes = zin.read(item.filename)
+
+            if ext in native_src_exts:
+                kept_native_sources.append(f"{rel_path} ({len(data_bytes)} B)")
+
+            if skip_so:
+                if ext == ".pyc" or "/__pycache__/" in f"/{rel_path}":
+                    continue
+                if ext == ".so":
+                    sha1_short = hashlib.sha1(data_bytes).hexdigest()[:10]
+                    kb_sz = round(len(data_bytes) / 1024.0, 1)
+                    syms = _extract_elf_so_symbols(data_bytes)
+                    sym_names = sorted(list(syms.keys()))
+                    skipped_so.append({
+                        "path": rel_path,
+                        "bytes": len(data_bytes),
+                        "kb": kb_sz,
+                        "sha1": sha1_short,
+                        "funcs": sym_names,
+                    })
+                    continue
+
+            zout.writestr(rel_path, data_bytes)
+
+        if skip_so:
+            pass_lines = [
+                "==========================================================",
+                f"📦 ПАСПОРТ НАТИВНЫХ БИБЛИОТЕК (.SO) — СБОРКА #{bnum} (ID: {sha[:7]})",
+                f"Описание сборки: {title}",
+                "==========================================================",
+                "Бинарные .so файлы были пропущены галочкой для уменьшения веса архива,",
+                "но ВСЕ исходники нативных библиотек (.go, .c, .cpp, .h, .hpp) сохранены в архиве!",
+                "",
+                f"✅ Сохраненные исходники .so библиотек ({len(kept_native_sources)}):",
+            ]
+            for ns in kept_native_sources:
+                pass_lines.append(f"  • {ns}")
+            pass_lines.append("")
+            pass_lines.append(f"🚫 Пропущенные скомпилированные бинарники .so ({len(skipped_so)}):")
+            for s_info in skipped_so:
+                pass_lines.append(
+                    f"  • {s_info['path']} — {s_info['kb']} КБ ({s_info['bytes']} B, sha1:{s_info['sha1']}), функций ELF: {len(s_info['funcs'])}"
+                )
+                if s_info["funcs"]:
+                    preview_fn = ", ".join(s_info["funcs"][:25])
+                    if len(s_info["funcs"]) > 25:
+                        preview_fn += f" ... (+{len(s_info['funcs']) - 25})"
+                    pass_lines.append(f"    Функции: {preview_fn}")
+            zout.writestr("SO_LIBRARIES_PASSPORT.txt", "\n".join(pass_lines).encode("utf-8"))
+
+    sz_bytes = os.path.getsize(out_zip_path)
+    sz_mb = round(sz_bytes / (1024.0 * 1024.0), 2)
+    sz_kb = round(sz_bytes / 1024.0, 1)
+    return {
+        "status": "ok",
+        "zip_path": out_zip_path,
+        "path": out_zip_path,
+        "filename": fname,
+        "size_mb": sz_mb,
+        "size_kb": sz_kb,
+        "commit_sha": sha[:7],
+        "sha": sha[:7],
+        "run_number": bnum,
+        "build_number": bnum,
+        "title": title,
+        "skip_so": skip_so,
+        "skipped_so_count": len(skipped_so),
+        "native_src_count": len(kept_native_sources),
+    }
+
+
 def _analyze_single_file_diff(rel_path: str, old_bytes: bytes, new_bytes: bytes, git_patch_str: str = "") -> dict:
     ext = os.path.splitext(rel_path)[1].lower()
     binary_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".so", ".jar", ".apk", ".zip", ".keystore", ".jks"}
@@ -1521,38 +1664,94 @@ class BuilderHandler(BaseHTTPRequestHandler):
         if path == "/api/fs/list":
             cfg = load_config()
             req_dir = (qs.get("dir", [""])[0] or cfg.get("browse_dir") or DEFAULT_SAVE_DIR).strip()
+            mode = (qs.get("mode", [""])[0] or "").strip()
             if not os.path.isdir(req_dir):
                 req_dir = DEFAULT_SAVE_DIR if os.path.isdir(DEFAULT_SAVE_DIR) else "/storage/emulated/0"
             req_dir = os.path.abspath(req_dir)
             save_config({"browse_dir": req_dir})
 
-            dirs_out = []
+            def _fmt_size(sz_b: int) -> str:
+                if sz_b < 1024:
+                    return f"{sz_b} Б"
+                if sz_b < 1024 * 1024:
+                    return f"{round(sz_b / 1024.0, 1)} КБ"
+                return f"{round(sz_b / (1024.0 * 1024.0), 2)} МБ"
+
+            def _fmt_dt(ts: float) -> str:
+                try:
+                    return datetime.datetime.fromtimestamp(ts).strftime("%d.%m.%Y %H:%M:%S")
+                except Exception:
+                    return ""
+
+            dirs_detail = []
+            files_detail = []
             zips_out = []
             apks_out = []
             try:
-                for entry in sorted(os.listdir(req_dir), key=lambda x: x.lower()):
+                for entry in os.listdir(req_dir):
                     if entry.startswith("."):
                         continue
                     fp = os.path.join(req_dir, entry)
+                    try:
+                        st = os.stat(fp)
+                        mtime = float(st.st_mtime)
+                        sz_b = int(st.st_size)
+                    except Exception:
+                        mtime = 0.0
+                        sz_b = 0
+
+                    dt_str = _fmt_dt(mtime)
                     if os.path.isdir(fp):
-                        dirs_out.append(entry)
+                        try:
+                            cnt = len([x for x in os.listdir(fp) if not x.startswith(".")])
+                        except Exception:
+                            cnt = 0
+                        dirs_detail.append({
+                            "name": entry,
+                            "path": fp,
+                            "mtime": mtime,
+                            "date": dt_str,
+                            "count": cnt,
+                        })
                     elif os.path.isfile(fp):
                         low = entry.lower()
+                        ext = os.path.splitext(low)[1]
+                        sz_mb = round(sz_b / (1024.0 * 1024.0), 2)
+                        sz_str = _fmt_size(sz_b)
+                        f_item = {
+                            "name": entry,
+                            "path": fp,
+                            "ext": ext,
+                            "bytes": sz_b,
+                            "mb": sz_mb,
+                            "size_str": sz_str,
+                            "mtime": mtime,
+                            "date": dt_str,
+                        }
+                        files_detail.append(f_item)
                         if low.endswith(".zip"):
-                            sz_mb = round(os.path.getsize(fp) / (1024.0 * 1024.0), 2)
-                            zips_out.append({"name": entry, "path": fp, "mb": sz_mb})
+                            zips_out.append(f_item)
                         elif low.endswith(".apk"):
-                            sz_mb = round(os.path.getsize(fp) / (1024.0 * 1024.0), 2)
-                            apks_out.append({"name": entry, "path": fp, "mb": sz_mb})
+                            apks_out.append(f_item)
             except Exception as e:
                 return self._send_json({"status": "error", "error": str(e)})
 
+            # Сортируем все списки: самые новые вверху (mtime DESC)
+            dirs_detail.sort(key=lambda x: (x["mtime"], x["name"].lower()), reverse=True)
+            files_detail.sort(key=lambda x: (x["mtime"], x["name"].lower()), reverse=True)
+            zips_out.sort(key=lambda x: (x["mtime"], x["name"].lower()), reverse=True)
+            apks_out.sort(key=lambda x: (x["mtime"], x["name"].lower()), reverse=True)
+
+            dirs_out = [d["name"] for d in dirs_detail]
             parent_dir = os.path.dirname(req_dir) if req_dir != "/" else "/"
             self._send_json({
                 "status": "ok",
                 "current_dir": req_dir,
                 "parent_dir": parent_dir,
+                "mode": mode,
                 "dirs": dirs_out,
+                "dirs_detail": dirs_detail,
+                "files_detail": files_detail,
                 "zips": zips_out,
                 "apks": apks_out,
             })
@@ -1683,6 +1882,20 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 hints = data.get("bridge_hints") or {}
                 inst = resolve_installed_apps_status(hints, _CACHED_RUNS_LIST)
                 return self._send_json({"status": "ok", "installed": inst})
+
+            if path in ("/api/download_build_zip", "/api/download_last_good_zip", "/api/download_clean_zip"):
+                cfg = load_config()
+                target_id = str(data.get("target_id") or data.get("run_id") or data.get("build_number") or "last_good")
+                skip_so = bool(data.get("skip_so", False))
+                save_dir = (data.get("save_dir") or cfg.get("save_dir") or DEFAULT_SAVE_DIR).strip()
+                res = download_build_source_zip_custom(
+                    target_id=target_id,
+                    skip_so=skip_so,
+                    save_dir=save_dir,
+                    token=data.get("token") or cfg.get("token") or "",
+                    repo=data.get("repo") or cfg.get("repo") or DEFAULT_REPO,
+                )
+                return self._send_json(res)
 
             if path == "/api/save_diff_txt":
                 cfg = load_config()

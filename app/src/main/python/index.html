@@ -274,11 +274,10 @@
       <span class="btn-main">🚀 Отправить этот .zip на GitHub</span>
       <span class="btn-sub" id="subPushZip">Из: .zip ➔ В: GitHub (сборка APK)</span>
     </button>
-    <label class="btn btn-blue" style="display:flex;flex-direction:column;align-items:center;justify-content:center;">
-      <span class="btn-main">📎 Загрузить .zip через систему</span>
-      <span class="btn-sub">Проводник Android ➔ В: GitHub</span>
-      <input type="file" id="sysZipInput" accept=".zip,application/zip" style="display:none;" onchange="pushSystemFileZip(this)">
-    </label>
+    <button class="btn btn-blue" onclick="openBrowser('pick_zip_push')">
+      <span class="btn-main">📎 Выбрать .zip и сразу отправить</span>
+      <span class="btn-sub">Новые .zip вверху ➔ В: GitHub</span>
+    </button>
   </div>
 
   <!-- БЛОК 1Б: Рабочая папка проекта -->
@@ -357,6 +356,10 @@
   <div style="font-size:11px;color:#8b949e;margin:8px 0 4px 0;">
     История сборок (нажми «📲 Установить», чтобы скачать в 32 потока и сразу открыть установщик):
   </div>
+  <label id="lblSkipSoLibs" style="display:flex;align-items:center;gap:8px;background:#0d141d;border:1px solid #39c5cf;padding:8px 10px;border-radius:9px;margin:6px 0 8px 0;font-size:11.5px;color:#e6edf3;cursor:pointer;user-select:none;">
+    <input type="checkbox" id="chkSkipSoLibs" onchange="localStorage.setItem('jb_skip_so_zip', this.checked ? '1' : '0')" style="width:17px;height:17px;accent-color:#39c5cf;flex-shrink:0;">
+    <span>🚫 <b>Без тяжелых .so при скачивании .zip</b> <span style="color:#8b949e;">(оставить все исходники <code>.go/.cpp/.c/.h/.py/.js/.java</code> + паспорт <code>.so</code> — ~0.5 МБ вместо 33 МБ)</span></span>
+  </label>
   <div id="runsListContainer">⏳ Загрузка сборок...</div>
 </div>
 
@@ -405,20 +408,47 @@
   </div>
 </div>
 
-<!-- Модальное окно проводника папок, .zip и .apk файлов -->
+<!-- СТИЛЬНОЕ МОДАЛЬНОЕ ОКНО ПРОВОДНИКА (.ZIP / ПАПКИ / .APK) -->
 <div id="fsModal" class="modal-bg">
-  <div class="modal-box">
+  <div class="modal-box" id="fsModalBox" style="max-width:460px;padding:13px;border-radius:14px;background:linear-gradient(180deg,#161b25 0%,#0d1117 100%);box-shadow:0 12px 36px rgba(0,0,0,0.85);">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-      <b id="fsModalTitle" style="color:#d2a8ff;">📂 Выбор папки</b>
-      <button class="btn" style="width:auto;padding:3px 8px;" onclick="closeBrowser()">✕</button>
+      <div>
+        <b id="fsModalTitle" style="color:#76e3ea;font-size:14px;display:block;">📦 Выбор .zip архива</b>
+        <span id="fsModalSubtitle" style="font-size:10.5px;color:#8b949e;">Сортировка: сначала самые новые</span>
+      </div>
+      <button class="btn" style="width:auto;padding:4px 10px;border-radius:8px;background:#21262d;" onclick="closeBrowser()">✕</button>
     </div>
-    <div id="fsCurrentDir" style="font-size:11px;color:#79c0ff;word-break:break-all;margin-bottom:8px;padding:6px;background:#090d13;border-radius:6px;"></div>
+
+    <!-- Быстрые чипы папок -->
+    <div style="display:flex;gap:5px;overflow-x:auto;padding-bottom:6px;margin-bottom:6px;">
+      <button class="btn" style="width:auto;padding:4px 8px;font-size:10.5px;white-space:nowrap;border-color:#39c5cf;color:#76e3ea;" onclick="loadBrowserDir('/storage/emulated/0/Download')">📥 Download</button>
+      <button class="btn" style="width:auto;padding:4px 8px;font-size:10.5px;white-space:nowrap;border-color:#a371f7;color:#d2a8ff;" onclick="loadBrowserDir('/storage/emulated/0/scripts/JennyPlayer')">🎵 JennyPlayer</button>
+      <button class="btn" style="width:auto;padding:4px 8px;font-size:10.5px;white-space:nowrap;border-color:#58a6ff;color:#79c0ff;" onclick="loadBrowserDir('/storage/emulated/0/scripts/JennyBuilder')">🛠️ JennyBuilder</button>
+      <button class="btn" style="width:auto;padding:4px 8px;font-size:10.5px;white-space:nowrap;" onclick="loadBrowserDir('/storage/emulated/0/scripts')">📁 scripts</button>
+      <button class="btn" style="width:auto;padding:4px 8px;font-size:10.5px;white-space:nowrap;" onclick="loadBrowserDir('/storage/emulated/0')">📱 Память</button>
+    </div>
+
+    <!-- Текущий путь -->
+    <div id="fsCurrentDir" style="font-size:11px;color:#79c0ff;word-break:break-all;margin-bottom:7px;padding:7px 9px;background:#090d13;border:1px solid #21262d;border-radius:8px;font-family:monospace;"></div>
+
+    <!-- Поиск и переключатель сортировки -->
     <div style="display:flex;gap:6px;margin-bottom:8px;">
-      <button class="btn" style="width:auto;" onclick="browseUp()">⬆️ Вверх</button>
-      <button class="btn btn-green" id="btnConfirmDir" onclick="confirmCurrentDir()">✅ Выбрать эту папку</button>
-      <button class="btn btn-purple" style="width:auto;" onclick="promptMkdir()">➕ Папка</button>
+      <input type="text" id="fsSearchInput" placeholder="🔍 Быстрый фильтр по имени..." style="margin-bottom:0;flex:1;padding:6px 9px;font-size:11.5px;border-radius:8px;" oninput="renderBrowserItems()">
+      <button class="btn btn-cyan" id="btnFsSortMode" style="width:auto;padding:6px 9px;font-size:10.5px;white-space:nowrap;" onclick="toggleFsSortMode()">🕒 Новые вверху</button>
     </div>
-    <div id="fsListArea" style="max-height:50vh;overflow-y:auto;border:1px solid #30363d;border-radius:8px;background:#0d1117;"></div>
+
+    <!-- Панель управления папкой (скрывается или адаптируется в режиме только .zip) -->
+    <div id="fsFolderToolbar" style="display:flex;gap:6px;margin-bottom:8px;">
+      <button class="btn" style="width:auto;padding:7px 10px;" onclick="browseUp()">⬆️ Вверх</button>
+      <button class="btn btn-green" id="btnConfirmDir" style="flex:1;" onclick="confirmCurrentDir()">✅ Выбрать эту папку</button>
+      <button class="btn btn-purple" id="btnMkdir" style="width:auto;padding:7px 10px;" onclick="promptMkdir()">➕ Папка</button>
+    </div>
+
+    <!-- Счётчик элементов -->
+    <div id="fsCountBar" style="font-size:10.5px;color:#8b949e;margin-bottom:5px;display:flex;justify-content:space-between;padding:0 2px;"></div>
+
+    <!-- Список файлов/папок -->
+    <div id="fsListArea" style="max-height:52vh;overflow-y:auto;border:1px solid #30363d;border-radius:10px;background:#090d13;padding:4px;"></div>
   </div>
 </div>
 
@@ -1361,6 +1391,92 @@ async function downloadLastGoodZip() {
   }
 }
 
+(function() {
+  setTimeout(() => {
+    const chk = document.getElementById('chkSkipSoLibs');
+    if (chk) chk.checked = (localStorage.getItem('jb_skip_so_zip') === '1');
+  }, 100);
+
+  const origFetch = window.fetch;
+  window.fetch = async function(url, opts) {
+    if (typeof url === 'string' && (url.indexOf('download_last_good_zip') !== -1 || url.indexOf('download_build_zip') !== -1)) {
+      opts = opts || {};
+      let bodyObj = {};
+      try { if (opts.body) bodyObj = JSON.parse(opts.body); } catch (e) {}
+      const chk = document.getElementById('chkSkipSoLibs');
+      if (chk && typeof bodyObj.skip_so === 'undefined') {
+        bodyObj.skip_so = Boolean(chk.checked);
+      }
+      opts.body = JSON.stringify(bodyObj);
+    }
+    return origFetch.call(this, url, opts);
+  };
+})();
+
+async function downloadBuildSourceZip(runNum, btnEl) {
+  if (!checkAndroidStorageState()) {
+    requestAndroidStoragePerm();
+    return;
+  }
+  const chk = document.getElementById('chkSkipSoLibs');
+  const skipSo = Boolean(chk && chk.checked);
+  const sd = document.getElementById('saveDirInput').value.trim() || '/storage/emulated/0/Download';
+  const oldText = btnEl ? btnEl.textContent : '📦 .zip';
+  if (btnEl) {
+    btnEl.disabled = true;
+    btnEl.textContent = '⏳...';
+  }
+  showStatus('⏳ Качаю исходники Сборки #' + runNum + (skipSo ? ' (без бинарников .so, но со всеми исходниками .go/.cpp/.c)...' : ' (полный архив со всеми .so)...'), false);
+  startProgressPolling('📦 Исходники Сборки #' + runNum, 'Загрузка архива в 32 потока...');
+  try {
+    const r = await fetch('/api/download_build_zip', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        target_id: runNum,
+        skip_so: skipSo,
+        save_dir: sd
+      })
+    });
+    const d = await r.json();
+    stopProgressPolling();
+    if (d.status === 'ok') {
+      document.getElementById('selectedZipPath').value = d.zip_path;
+      updateButtonLabels();
+      const szLabel = (d.size_mb >= 1) ? (d.size_mb + ' МБ') : (d.size_kb + ' КБ');
+      if (btnEl) {
+        btnEl.textContent = '✅ ' + szLabel;
+        setTimeout(() => {
+          btnEl.disabled = false;
+          btnEl.textContent = oldText;
+        }, 3000);
+      }
+      const modeInfo = d.skip_so
+        ? '🪶 Без тяжелых .so (пропущено .so: ' + d.skipped_so_count + ', сохранено исходников .go/.cpp/.c/.h: ' + d.native_src_count + ' + SO_LIBRARIES_PASSPORT.txt)'
+        : '📦 Полный архив (все исходники + скомпилированные .so)';
+      showStatus(
+        '✅ Исходники Сборки #' + d.run_number + ' (ID: ' + d.commit_sha + ') скачаны!\n' +
+        '• Файл: ' + d.zip_path + ' (' + szLabel + ')\n' +
+        '• ' + modeInfo,
+        false
+      );
+    } else {
+      if (btnEl) {
+        btnEl.disabled = false;
+        btnEl.textContent = oldText;
+      }
+      showStatus('❌ Ошибка скачивания .zip: ' + d.error, true);
+    }
+  } catch (e) {
+    stopProgressPolling();
+    if (btnEl) {
+      btnEl.disabled = false;
+      btnEl.textContent = oldText;
+    }
+    showStatus('❌ Ошибка сети: ' + e, true);
+  }
+}
+
 async function downloadRunApk(runId, runNum, autoInstallAfter) {
   if (!checkAndroidStorageState()) {
     requestAndroidStoragePerm();
@@ -1441,11 +1557,15 @@ async function loadRuns() {
       html += '  </div>';
       if (item.conclusion === 'success') {
         html += '  <div style="display:flex;gap:4px;flex-shrink:0;">';
+        html += '    <button class="btn btn-purple" style="width:auto;padding:6px 7px;font-size:10.5px;" onclick="event.stopPropagation();downloadBuildSourceZip(' + item.run_number + ', this)">📦 .zip</button>';
         html += '    <button class="btn btn-blue" style="width:auto;padding:6px 8px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', false)">📥 APK</button>';
         html += '    <button class="btn btn-green" style="width:auto;padding:6px 8px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', true)">📲 Установить</button>';
         html += '  </div>';
       } else if (item.conclusion === 'failure') {
-        html += '  <button class="btn btn-red" style="width:auto;padding:6px 9px;font-size:10.5px;white-space:nowrap;" onclick="event.stopPropagation();selectRun(' + item.id + ')">🔍 Ошибка #' + item.run_number + '</button>';
+        html += '  <div style="display:flex;gap:4px;flex-shrink:0;">';
+        html += '    <button class="btn btn-purple" style="width:auto;padding:6px 7px;font-size:10.5px;" onclick="event.stopPropagation();downloadBuildSourceZip(' + item.run_number + ', this)">📦 .zip</button>';
+        html += '    <button class="btn btn-red" style="width:auto;padding:6px 9px;font-size:10.5px;white-space:nowrap;" onclick="event.stopPropagation();selectRun(' + item.id + ')">🔍 Ошибка #' + item.run_number + '</button>';
+        html += '  </div>';
       }
       html += '</div>';
     }
@@ -1539,27 +1659,93 @@ function copyFailedStepLog() {
   }, 2500);
 }
 
+let lastBrowserData = null;
+let fsSortByNewest = true;
+
+function toggleFsSortMode() {
+  fsSortByNewest = !fsSortByNewest;
+  const btn = document.getElementById('btnFsSortMode');
+  if (btn) {
+    btn.textContent = fsSortByNewest ? '🕒 Новые вверху' : '🔤 По имени';
+  }
+  renderBrowserItems();
+}
+
+function getFileIconByExt(ext, name) {
+  const e = (ext || '').toLowerCase();
+  if (e === '.zip') return '📦';
+  if (e === '.apk') return '📲';
+  if (e === '.py') return '🐍';
+  if (e === '.js' || e === '.ts') return '🟨';
+  if (e === '.java' || e === '.kt') return '☕';
+  if (e === '.go') return '🐹';
+  if (e === '.c' || e === '.cpp' || e === '.h' || e === '.hpp') return '⚙️';
+  if (e === '.so') return '🧬';
+  if (e === '.html' || e === '.css') return '🌐';
+  if (e === '.json' || e === '.yml' || e === '.yaml' || e === '.xml') return '🛠️';
+  if (e === '.txt' || e === '.md' || e === '.log') return '📄';
+  if (e === '.png' || e === '.jpg' || e === '.jpeg' || e === '.webp') return '🖼️';
+  return '📄';
+}
+
 function openBrowser(mode) {
   if (!checkAndroidStorageState()) {
     requestAndroidStoragePerm();
     return;
   }
   currentBrowserMode = mode;
-  document.getElementById('fsModal').style.display = 'flex';
+  fsSortByNewest = true;
+  const sortBtn = document.getElementById('btnFsSortMode');
+  if (sortBtn) sortBtn.textContent = '🕒 Новые вверху';
+  const searchInp = document.getElementById('fsSearchInput');
+  if (searchInp) searchInp.value = '';
+
+  const modal = document.getElementById('fsModal');
+  const box = document.getElementById('fsModalBox');
   const titleEl = document.getElementById('fsModalTitle');
+  const subEl = document.getElementById('fsModalSubtitle');
+  const toolbar = document.getElementById('fsFolderToolbar');
   const confirmBtn = document.getElementById('btnConfirmDir');
-  if (mode === 'pick_zip') {
-    titleEl.textContent = '📂 Выбери .zip архив';
-    confirmBtn.style.display = 'none';
+  const mkdirBtn = document.getElementById('btnMkdir');
+
+  modal.style.display = 'flex';
+
+  if (mode === 'pick_zip' || mode === 'pick_zip_push') {
+    box.style.borderColor = '#39c5cf';
+    titleEl.style.color = '#76e3ea';
+    titleEl.textContent = (mode === 'pick_zip_push')
+      ? '🚀 Выбери .zip для отправки на GitHub'
+      : '📦 Выбери .zip архив';
+    subEl.textContent = 'Показаны только .zip архивы • Свежие на самом верху';
+    toolbar.style.display = 'none';
+    currentBrowseDir = document.getElementById('saveDirInput').value.trim() || '/storage/emulated/0/Download';
   } else if (mode === 'pick_apk_install') {
+    box.style.borderColor = '#3fb950';
+    titleEl.style.color = '#7ee787';
     titleEl.textContent = '📲 Выбери .apk файл для установки';
+    subEl.textContent = 'Свежие сборки .apk расположены вверху';
+    toolbar.style.display = 'flex';
     confirmBtn.style.display = 'none';
+    mkdirBtn.style.display = 'none';
+    currentBrowseDir = document.getElementById('saveDirInput').value.trim() || '/storage/emulated/0/Download';
   } else if (mode === 'pick_source_dir') {
-    titleEl.textContent = '📂 Выбери рабочую папку проекта';
+    box.style.borderColor = '#a371f7';
+    titleEl.style.color = '#d2a8ff';
+    titleEl.textContent = '📁 Рабочая папка проекта';
+    subEl.textContent = 'Отображаются все папки и все файлы без ограничений';
+    toolbar.style.display = 'flex';
     confirmBtn.style.display = 'inline-block';
+    mkdirBtn.style.display = 'inline-block';
+    currentBrowseDir = document.getElementById('sourceFolderInput').value.trim() || '/storage/emulated/0/scripts/JennyPlayer';
   } else {
-    titleEl.textContent = '📂 Выбери папку куда сохранять файлы';
+    box.style.borderColor = '#58a6ff';
+    titleEl.style.color = '#79c0ff';
+    titleEl.textContent = '💾 Папка сохранения файлов';
+    subEl.textContent = 'Отображаются все папки и все файлы без ограничений';
+    toolbar.style.display = 'flex';
     confirmBtn.style.display = 'inline-block';
+    mkdirBtn.style.display = 'inline-block';
+    currentBrowseDir = document.getElementById('saveDirInput').value.trim() || '/storage/emulated/0/Download';
   }
   loadBrowserDir(currentBrowseDir);
 }
@@ -1570,41 +1756,146 @@ function closeBrowser() {
 
 async function loadBrowserDir(dirPath) {
   try {
-    const r = await fetch('/api/fs/list?dir=' + encodeURIComponent(dirPath || ''));
+    const listArea = document.getElementById('fsListArea');
+    if (listArea) listArea.innerHTML = '<div style="padding:14px;color:#79c0ff;text-align:center;">⏳ Чтение списка файлов...</div>';
+    const r = await fetch('/api/fs/list?dir=' + encodeURIComponent(dirPath || '') + '&mode=' + encodeURIComponent(currentBrowserMode));
     const d = await r.json();
-    if (d.status !== 'ok') return;
+    if (d.status !== 'ok') {
+      if (listArea) listArea.innerHTML = '<div style="padding:12px;color:#ff7b72;">❌ ' + (d.error || 'Ошибка чтения папки') + '</div>';
+      return;
+    }
+    lastBrowserData = d;
     currentBrowseDir = d.current_dir;
     parentBrowseDir = d.parent_dir;
-    document.getElementById('fsCurrentDir').textContent = currentBrowseDir;
+    document.getElementById('fsCurrentDir').textContent = '📍 ' + currentBrowseDir;
+    renderBrowserItems();
+  } catch (e) {}
+}
 
-    let html = '';
-    if (currentBrowserMode === 'pick_zip') {
-      const zips = d.zips || [];
-      for (let i = 0; i < zips.length; i++) {
-        const z = zips[i];
-        html += '<div class="dir-item" style="color:#7ee787;font-weight:bold;" onclick="selectZipFromBrowser(\'' + z.path.replace(/'/g, "\\'") + '\')">';
-        html += '  <span>📦 ' + z.name + '</span><span style="font-size:10px;color:#8b949e;">' + z.mb + ' МБ</span>';
-        html += '</div>';
-      }
-    } else if (currentBrowserMode === 'pick_apk_install') {
-      const apks = d.apks || [];
-      for (let k = 0; k < apks.length; k++) {
-        const a = apks[k];
-        html += '<div class="dir-item" style="color:#7ee787;font-weight:bold;" onclick="selectApkFromBrowser(\'' + a.path.replace(/'/g, "\\'") + '\')">';
-        html += '  <span>📲 ' + a.name + '</span><span style="font-size:10px;color:#8b949e;">' + a.mb + ' МБ</span>';
-        html += '</div>';
-      }
+function renderBrowserItems() {
+  const d = lastBrowserData;
+  if (!d) return;
+  const listArea = document.getElementById('fsListArea');
+  const countBar = document.getElementById('fsCountBar');
+  const q = ((document.getElementById('fsSearchInput') || {}).value || '').trim().toLowerCase();
+
+  const sortFn = (a, b) => {
+    if (fsSortByNewest) {
+      return (b.mtime || 0) - (a.mtime || 0);
     }
-    const dirs = d.dirs || [];
-    for (let j = 0; j < dirs.length; j++) {
-      const dn = dirs[j];
-      const fullSub = (currentBrowseDir === '/' ? '' : currentBrowseDir) + '/' + dn;
-      html += '<div class="dir-item" onclick="loadBrowserDir(\'' + fullSub.replace(/'/g, "\\'") + '\')">';
-      html += '  <span>📁 ' + dn + '</span><span style="color:#8b949e;">➔</span>';
+    return String(a.name || '').localeCompare(String(b.name || ''), 'ru');
+  };
+
+  let html = '';
+
+  // РЕЖИМ 1: ВЫБОР .ZIP (отображаются ТОЛЬКО .zip, отсортированные по новым вверху)
+  if (currentBrowserMode === 'pick_zip' || currentBrowserMode === 'pick_zip_push') {
+    let zips = (d.zips || []).slice().sort(sortFn);
+    if (q) {
+      zips = zips.filter(z => (z.name || '').toLowerCase().indexOf(q) !== -1);
+    }
+    if (countBar) {
+      countBar.innerHTML = '<span>📦 Найдено архивов .zip: <b style="color:#7ee787;">' + zips.length + '</b></span><span>Нажми на .zip для выбора</span>';
+    }
+    for (let i = 0; i < zips.length; i++) {
+      const z = zips[i];
+      const isNewest = (i === 0 && fsSortByNewest);
+      const newBadge = isNewest ? '<span style="background:rgba(46,160,67,0.3);border:1px solid #3fb950;color:#7ee787;font-size:9.5px;padding:1px 5px;border-radius:4px;margin-left:5px;">🆕 СВЕЖИЙ</span>' : '';
+      const borderStyle = isNewest ? 'border:1px solid rgba(57,197,207,0.55);background:#101b24;' : 'border:1px solid #1c222b;background:#0d1219;';
+      const safePath = (z.path || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      html += '<div class="dir-item" style="' + borderStyle + 'border-radius:8px;margin-bottom:5px;padding:9px 10px;" onclick="selectZipFromBrowser(\'' + safePath + '\')">';
+      html += '  <div style="flex:1;min-width:0;padding-right:8px;">';
+      html += '    <div style="color:#7ee787;font-weight:700;font-size:12px;word-break:break-all;">📦 ' + z.name + newBadge + '</div>';
+      html += '    <div style="font-size:10px;color:#8b949e;margin-top:3px;">🕒 ' + (z.date || '—') + '</div>';
+      html += '  </div>';
+      html += '  <div style="text-align:right;flex-shrink:0;">';
+      html += '    <span style="display:inline-block;background:#161b22;border:1px solid #30363d;color:#79c0ff;font-size:10.5px;font-weight:700;padding:3px 7px;border-radius:6px;">' + (z.size_str || (z.mb + ' МБ')) + '</span>';
+      html += '  </div>';
       html += '</div>';
     }
-    document.getElementById('fsListArea').innerHTML = html || '<div style="padding:12px;color:#8b949e;">Папка пуста</div>';
-  } catch (e) {}
+    listArea.innerHTML = html || '<div style="padding:18px;color:#8b949e;text-align:center;">В этой папке нет .zip архивов.<br><span style="font-size:10.5px;color:#58a6ff;">Нажми на кнопку «📥 Download» выше, чтобы открыть загрузки.</span></div>';
+    return;
+  }
+
+  // РЕЖИМ 2: ВЫБОР .APK ДЛЯ УСТАНОВКИ
+  if (currentBrowserMode === 'pick_apk_install') {
+    let apks = (d.apks || []).slice().sort(sortFn);
+    let dirs = (d.dirs_detail || []).slice().sort(sortFn);
+    if (q) {
+      apks = apks.filter(a => (a.name || '').toLowerCase().indexOf(q) !== -1);
+      dirs = dirs.filter(dr => (dr.name || '').toLowerCase().indexOf(q) !== -1);
+    }
+    if (countBar) {
+      countBar.innerHTML = '<span>📲 Найдено .apk: <b style="color:#7ee787;">' + apks.length + '</b> | 📁 Папок: ' + dirs.length + '</span><span>Свежие вверху</span>';
+    }
+    for (let k = 0; k < apks.length; k++) {
+      const a = apks[k];
+      const isNewest = (k === 0 && fsSortByNewest);
+      const newBadge = isNewest ? '<span style="background:rgba(46,160,67,0.3);border:1px solid #3fb950;color:#7ee787;font-size:9.5px;padding:1px 5px;border-radius:4px;margin-left:5px;">🆕 СВЕЖИЙ</span>' : '';
+      const safePath = (a.path || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      html += '<div class="dir-item" style="border:1px solid #1f3325;background:#0e1913;border-radius:8px;margin-bottom:5px;padding:9px 10px;" onclick="selectApkFromBrowser(\'' + safePath + '\')">';
+      html += '  <div style="flex:1;min-width:0;padding-right:8px;">';
+      html += '    <div style="color:#7ee787;font-weight:700;font-size:12px;word-break:break-all;">📲 ' + a.name + newBadge + '</div>';
+      html += '    <div style="font-size:10px;color:#8b949e;margin-top:3px;">🕒 ' + (a.date || '—') + '</div>';
+      html += '  </div>';
+      html += '  <span style="background:#161b22;border:1px solid #3fb950;color:#7ee787;font-size:10.5px;font-weight:700;padding:3px 7px;border-radius:6px;flex-shrink:0;">' + (a.size_str || (a.mb + ' МБ')) + '</span>';
+      html += '</div>';
+    }
+    for (let j = 0; j < dirs.length; j++) {
+      const dr = dirs[j];
+      const safeSub = (dr.path || ((currentBrowseDir === '/' ? '' : currentBrowseDir) + '/' + dr.name)).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      html += '<div class="dir-item" style="border-radius:7px;margin-bottom:3px;padding:8px 10px;background:#0d1117;" onclick="loadBrowserDir(\'' + safeSub + '\')">';
+      html += '  <div><b style="color:#79c0ff;">📁 ' + dr.name + '</b><div style="font-size:10px;color:#8b949e;">Элементов: ' + (dr.count || 0) + ' • ' + (dr.date || '') + '</div></div>';
+      html += '  <span style="color:#8b949e;">Открыть ➔</span>';
+      html += '</div>';
+    }
+    listArea.innerHTML = html || '<div style="padding:16px;color:#8b949e;text-align:center;">В этой папке нет .apk файлов</div>';
+    return;
+  }
+
+  // РЕЖИМ 3: ВЫБОР ПАПКИ (ОТОБРАЖАЮТСЯ ВСЕ ПАПКИ И ВСЕ ФАЙЛЫ БЕЗ ОГРАНИЧЕНИЙ)
+  let dirs = (d.dirs_detail || []).slice().sort(sortFn);
+  let files = (d.files_detail || []).slice().sort(sortFn);
+  if (q) {
+    dirs = dirs.filter(dr => (dr.name || '').toLowerCase().indexOf(q) !== -1);
+    files = files.filter(fl => (fl.name || '').toLowerCase().indexOf(q) !== -1);
+  }
+  if (countBar) {
+    countBar.innerHTML = '<span>📁 Папок: <b style="color:#d2a8ff;">' + dirs.length + '</b> | 📄 Всех файлов в папке: <b style="color:#79c0ff;">' + files.length + '</b></span><span>Без ограничений</span>';
+  }
+
+  for (let j = 0; j < dirs.length; j++) {
+    const dr = dirs[j];
+    const safeSub = (dr.path || ((currentBrowseDir === '/' ? '' : currentBrowseDir) + '/' + dr.name)).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    html += '<div class="dir-item" style="border:1px solid #262c36;background:#121720;border-radius:8px;margin-bottom:4px;padding:8px 10px;" onclick="loadBrowserDir(\'' + safeSub + '\')">';
+    html += '  <div style="flex:1;min-width:0;padding-right:8px;">';
+    html += '    <div style="color:#d2a8ff;font-weight:700;font-size:12px;word-break:break-all;">📁 ' + dr.name + '</div>';
+    html += '    <div style="font-size:10px;color:#8b949e;margin-top:2px;">🕒 ' + (dr.date || '—') + ' • внутри: ' + (dr.count || 0) + ' элем.</div>';
+    html += '  </div>';
+    html += '  <span style="color:#a371f7;font-size:11px;font-weight:700;flex-shrink:0;">Войти ➔</span>';
+    html += '</div>';
+  }
+
+  for (let fIdx = 0; fIdx < files.length; fIdx++) {
+    const fl = files[fIdx];
+    const icon = getFileIconByExt(fl.ext, fl.name);
+    const isZip = (fl.ext === '.zip');
+    const isApk = (fl.ext === '.apk');
+    const safeFilePath = (fl.path || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const clickAttr = isZip
+      ? 'onclick="selectZipFromBrowser(\'' + safeFilePath + '\')"'
+      : (isApk ? 'onclick="selectApkFromBrowser(\'' + safeFilePath + '\')"' : '');
+    const nameColor = isZip ? '#7ee787' : (isApk ? '#76e3ea' : '#e6edf3');
+    html += '<div class="dir-item" style="border:1px solid #191f28;background:#0b0f15;border-radius:7px;margin-bottom:3px;padding:7px 10px;cursor:' + (clickAttr ? 'pointer' : 'default') + ';" ' + clickAttr + '>';
+    html += '  <div style="flex:1;min-width:0;padding-right:8px;">';
+    html += '    <div style="color:' + nameColor + ';font-size:11.5px;font-weight:600;word-break:break-all;">' + icon + ' ' + fl.name + '</div>';
+    html += '    <div style="font-size:10px;color:#8b949e;margin-top:2px;">🕒 ' + (fl.date || '—') + '</div>';
+    html += '  </div>';
+    html += '  <span style="background:#161b22;border:1px solid #21262d;color:#8b949e;font-size:10px;padding:2px 6px;border-radius:5px;flex-shrink:0;">' + (fl.size_str || (fl.mb + ' МБ')) + '</span>';
+    html += '</div>';
+  }
+
+  listArea.innerHTML = html || '<div style="padding:18px;color:#8b949e;text-align:center;">Папка пуста</div>';
 }
 
 function browseUp() {
@@ -1612,9 +1903,15 @@ function browseUp() {
 }
 
 function selectZipFromBrowser(fullZipPath) {
+  const modeWas = currentBrowserMode;
   document.getElementById('selectedZipPath').value = fullZipPath;
   updateButtonLabels();
   closeBrowser();
+  if (modeWas === 'pick_zip_push') {
+    pushSelectedZipPath();
+  } else {
+    showStatus('📦 Выбран .zip архив:\n• ' + fullZipPath, false);
+  }
 }
 
 function selectApkFromBrowser(fullApkPath) {
