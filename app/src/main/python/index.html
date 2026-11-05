@@ -20,7 +20,7 @@
     font-size: 13px; font-weight: 700; color: #d2a8ff;
     margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;
   }
-  input[type="text"], input[type="password"] {
+  input[type="text"], input[type="password"], select {
     width: 100%; padding: 8px 10px; border-radius: 8px;
     border: 1px solid #30363d; background: #090d13; color: #fff;
     font-size: 12px; margin-bottom: 6px;
@@ -80,7 +80,7 @@
     margin: 8px 0; border: 1px solid #30363d;
   }
   .diff-pre {
-    max-height: 270px; overflow-y: auto; background: #090d13;
+    max-height: 310px; overflow-y: auto; background: #090d13;
     padding: 8px; border-radius: 6px; font-family: monospace;
     font-size: 10.5px; color: #e6edf3; white-space: pre-wrap; word-break: break-word;
     margin: 8px 0; border: 1px solid #30363d; line-height: 1.35;
@@ -130,7 +130,7 @@
 
 <div class="card">
   <div class="card-title">
-    <span>🛠️ JENNY BUILDER v1.5</span>
+    <span>🛠️ JENNY BUILDER v1.6</span>
     <button class="btn" style="width:auto;padding:4px 8px;font-size:11px;" onclick="toggleSettings()">⚙️ Настройки</button>
   </div>
   <div id="settingsArea" style="display:none;margin-top:6px;border-top:1px solid #30363d;padding-top:8px;">
@@ -152,7 +152,7 @@
     Файлы: <b id="lblStoragePerm" style="color:#3fb950;" onclick="requestAndroidStoragePerm()">...</b>
   </div>
 
-  <!-- LUCKY-PATCHER СКАНЕР УСТАНОВЛЕННЫХ СЕЙЧАС НА ТЕЛЕФОНЕ ВЕРСИЙ -->
+  <!-- БЛОК ОПРЕДЕЛЕНИЯ УСТАНОВЛЕННОЙ НА ТЕЛЕФОНЕ ВЕРСИИ -->
   <div class="lp-box" id="installedStatusBox">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
       <b style="color:#7ee787;font-size:12px;">📲 ЧТО СЕЙЧАС УСТАНОВЛЕНО НА ТЕЛЕФОНЕ:</b>
@@ -161,40 +161,50 @@
     <div style="font-size:11.5px;line-height:1.45;">
       <div>🎵 <b>Jenny Player:</b> <span id="instPlayerMain" style="color:#fff;font-weight:bold;">проверка...</span></div>
       <div id="instPlayerSub" style="font-size:10.5px;color:#8b949e;margin-bottom:4px;"></div>
+
+      <!-- Если текущий APK плеера был собран до внедрения авто-штампа номера (#), можно указать какая сборка сейчас стоит -->
+      <div id="manualBuildPickerRow" style="display:none;margin:5px 0;padding:6px;background:#090d13;border-radius:6px;border:1px solid #233829;">
+        <div style="font-size:10px;color:#f2cc60;margin-bottom:3px;">
+          💡 Текущий APK плеера был собран ещё без авто-штампа в build.gradle. Укажи какая сборка сейчас стоит (со следующей сборки будет определяться само на 100%):
+        </div>
+        <select id="manualInstalledSelect" style="margin-bottom:0;font-size:11px;padding:5px;" onchange="setManualInstalledBuild(this.value)"></select>
+      </div>
+
       <div style="border-top:1px dashed #233829;padding-top:4px;font-size:10.5px;color:#8b949e;">
-        🛠️ <b>Jenny Builder:</b> <span id="instBuilderMain" style="color:#d2a8ff;">v1.5</span>
+        🛠️ <b>Jenny Builder:</b> <span id="instBuilderMain" style="color:#d2a8ff;">v1.6</span>
       </div>
     </div>
   </div>
 </div>
 
-<!-- 1. РАБОТА С АРХИВОМ И ПАПКОЙ ПРОЕКТА -->
+<!-- 1. РАБОТА С АРХИВОМ, ПАПКОЙ И GIT DIFF -->
 <div class="card">
   <div class="card-title">📤 1. ОБМЕН МЕЖДУ ПАПКОЙ ПРОЕКТА, АРХИВОМ (.ZIP) И GITHUB</div>
   <input type="text" id="commitMsgInput" placeholder="Описание новой сборки, например: v166: фикс кнопок (необязательно)">
 
-  <!-- СКАНЕР ИЗМЕНЕНИЙ В ФУНКЦИЯХ И КОДЕ -->
-  <div style="margin-bottom:10px;padding:8px;background:#0d141d;border:1px solid #39c5cf;border-radius:10px;">
-    <div style="font-size:11px;font-weight:bold;color:#76e3ea;margin-bottom:6px;">
-      🔬 СКАНЕР ИЗМЕНЕНИЙ В ФУНКЦИЯХ И ФАЙЛАХ (СРАВНЕНИЕ С GITHUB):
+  <!-- GIT-СКАНЕР С ВЫПАДАЮЩИМ СПИСКОМ СБОРОК -->
+  <div style="margin-bottom:10px;padding:9px;background:#0d141d;border:1px solid #39c5cf;border-radius:10px;">
+    <div style="font-size:11.5px;font-weight:bold;color:#76e3ea;margin-bottom:6px;">
+      🔬 GIT-СРАВНЕНИЕ СБОРОК И ЛОКАЛЬНОГО КОДА (ДО ПОСЛЕДНЕГО СИМВОЛА):
     </div>
-    <div class="grid2">
-      <button class="btn btn-cyan" onclick="checkDiffFolder()">
-        <span class="btn-main">🔍 Что изменено в рабочей папке</span>
-        <span class="btn-sub" id="subDiffFolder">Сравнить папку с GitHub</span>
-      </button>
-      <button class="btn btn-cyan" onclick="checkDiffZip()">
-        <span class="btn-main">🔍 Что изменено в .zip архиве</span>
-        <span class="btn-sub" id="subDiffZip">Сравнить выбранный .zip с GitHub</span>
-      </button>
-    </div>
+
+    <div style="font-size:10.5px;color:#8b949e;margin-bottom:2px;">1. Базовая сборка с GitHub (С какой сборкой сравнивать):</div>
+    <select id="diffBaseSelect" style="margin-bottom:6px;"></select>
+
+    <div style="font-size:10.5px;color:#8b949e;margin-bottom:2px;">2. Цель сравнения (Что сравнивать с выбранной выше сборкой):</div>
+    <select id="diffTargetSelect" style="margin-bottom:8px;"></select>
+
+    <button class="btn btn-cyan" onclick="runSelectedComparison()">
+      <span class="btn-main">🔍 Сравнить выбранные версии через Git</span>
+      <span class="btn-sub">Показать все коммиты, функции (+ / - / ~) и построчный Git Patch</span>
+    </button>
 
     <!-- Панель готового отчёта об изменениях -->
     <div id="diffReportPanel" class="diff-box">
-      <div style="font-weight:bold;color:#76e3ea;font-size:12px;" id="diffTitleLbl">📊 Список изменений по функциям и файлам</div>
+      <div style="font-weight:bold;color:#76e3ea;font-size:12px;" id="diffTitleLbl">📊 Список изменений</div>
       <div class="grid2" style="margin-top:6px;">
         <button class="btn btn-green" id="btnCopyDiffReport" onclick="copyDiffReport()">
-          📋 Скопировать весь список (для чата)
+          📋 Скопировать весь отчёт (для чата)
         </button>
         <button class="btn btn-purple" onclick="applyShortDiffToCommitMsg()">
           ✍️ Вставить сводку в «Описание сборки»
@@ -324,6 +334,7 @@ let latestGoodBuildInfo = null;
 let lastDiffReportText = '';
 let lastDiffShortCommit = '';
 let currentInstalledState = null;
+let allLoadedRuns = [];
 
 function shortPath(p) {
   if (!p) return 'не выбрано';
@@ -333,8 +344,8 @@ function shortPath(p) {
 function formatBuildBadge(bnum, vtag, title) {
   let parts = [];
   if (bnum) parts.push('Сборка #' + bnum);
-  if (vtag) parts.push('версия ' + vtag);
-  let head = parts.join(' • ') || 'Последняя сборка';
+  if (vtag) parts.push(vtag);
+  let head = parts.join(' / ') || 'Последняя сборка';
   if (title) {
     let cleanTitle = title.length > 42 ? (title.substring(0, 42) + '...') : title;
     return head + ' («' + cleanTitle + '»)';
@@ -355,6 +366,75 @@ function collectBridgeAppHints() {
   return hints;
 }
 
+function populateComparisonDropdowns(runs) {
+  const baseSel = document.getElementById('diffBaseSelect');
+  const targetSel = document.getElementById('diffTargetSelect');
+  const manualSel = document.getElementById('manualInstalledSelect');
+  if (!baseSel || !targetSel) return;
+
+  const prevBase = baseSel.value;
+  const prevTarget = targetSel.value;
+  const instBnum = (currentInstalledState && currentInstalledState.player) ? currentInstalledState.player.build_number : null;
+
+  let baseHtml = '';
+  let manualHtml = '<option value="">— Выбери какая сборка сейчас установлена —</option>';
+
+  for (let i = 0; i < runs.length; i++) {
+    const r = runs[i];
+    const vt = r.version_tag ? (' / ' + r.version_tag) : '';
+    const isInst = (instBnum && r.run_number === instBnum);
+    const instPrefix = isInst ? '📲 [УСТАНОВЛЕНА СЕЙЧАС] ' : '';
+    const shortTitle = (r.title || '').length > 36 ? (r.title.substring(0, 36) + '...') : (r.title || '');
+    const lbl = instPrefix + 'Сборка #' + r.run_number + vt + ' (ID: ' + r.head_sha + ') — ' + shortTitle;
+    baseHtml += '<option value="' + r.full_sha + '" data-label="Сборка #' + r.run_number + vt + ' (ID: ' + r.head_sha + ')">' + lbl + '</option>';
+    manualHtml += '<option value="' + r.run_number + '"' + (isInst ? ' selected' : '') + '>Сборка #' + r.run_number + vt + ' — ' + shortTitle + '</option>';
+  }
+  baseSel.innerHTML = baseHtml;
+  if (manualSel) manualSel.innerHTML = manualHtml;
+
+  const srcP = shortPath(document.getElementById('sourceFolderInput').value.trim() || '/storage/emulated/0/scripts/JennyPlayer');
+  const zipP = shortPath(document.getElementById('selectedZipPath').value.trim());
+
+  let targetHtml = '';
+  targetHtml += '<option value="LOCAL_FOLDER">📁 Рабочая папка на телефоне (' + srcP + ')</option>';
+  targetHtml += '<option value="LOCAL_ZIP">📦 Выбранный .zip архив (' + zipP + ')</option>';
+  for (let j = 0; j < runs.length; j++) {
+    const r = runs[j];
+    const vt = r.version_tag ? (' / ' + r.version_tag) : '';
+    const shortTitle = (r.title || '').length > 36 ? (r.title.substring(0, 36) + '...') : (r.title || '');
+    const lbl = '☁️ GitHub: Сборка #' + r.run_number + vt + ' (ID: ' + r.head_sha + ') — ' + shortTitle;
+    targetHtml += '<option value="GH:' + r.full_sha + '" data-label="Сборка #' + r.run_number + vt + ' (ID: ' + r.head_sha + ')">' + lbl + '</option>';
+  }
+  targetSel.innerHTML = targetHtml;
+
+  if (prevBase && Array.from(baseSel.options).some(o => o.value === prevBase)) {
+    baseSel.value = prevBase;
+  } else if (instBnum) {
+    const foundInst = runs.find(r => r.run_number === instBnum);
+    if (foundInst) baseSel.value = foundInst.full_sha;
+  }
+  if (prevTarget && Array.from(targetSel.options).some(o => o.value === prevTarget)) {
+    targetSel.value = prevTarget;
+  }
+}
+
+async function setManualInstalledBuild(bnumStr) {
+  if (!bnumStr) return;
+  try {
+    const hints = collectBridgeAppHints();
+    const r = await fetch('/api/installed_info', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({bridge_hints: hints, manual_installed_build: parseInt(bnumStr, 10)})
+    });
+    const d = await r.json();
+    if (d.status === 'ok' && d.installed) {
+      renderInstalledStatus(d.installed);
+      loadRuns();
+    }
+  } catch (e) {}
+}
+
 function renderInstalledStatus(inst) {
   if (!inst) return;
   currentInstalledState = inst;
@@ -364,11 +444,13 @@ function renderInstalledStatus(inst) {
   const pMain = document.getElementById('instPlayerMain');
   const pSub = document.getElementById('instPlayerSub');
   const bMain = document.getElementById('instBuilderMain');
+  const manualRow = document.getElementById('manualBuildPickerRow');
 
   if (!p.installed) {
     pMain.textContent = 'Не установлен на телефоне ❌';
     pMain.style.color = '#ff7b72';
     pSub.textContent = '';
+    if (manualRow) manualRow.style.display = 'none';
   } else {
     pMain.textContent = '🟢 ' + (p.human_summary || ('Версия ' + p.versionName));
     pMain.style.color = '#7ee787';
@@ -376,12 +458,15 @@ function renderInstalledStatus(inst) {
     if (p.updated_at) subParts.push('Установлен: ' + p.updated_at);
     if (latestGoodBuildInfo && latestGoodBuildInfo.run_number && p.build_number) {
       if (p.build_number >= latestGoodBuildInfo.run_number) {
-        subParts.push('✅ Стоит самая свежая сборка с GitHub');
+        subParts.push('✅ Установлена самая свежая сборка с GitHub');
       } else {
         subParts.push('⚠️ На GitHub есть более новая Сборка #' + latestGoodBuildInfo.run_number);
       }
     }
     pSub.textContent = subParts.join(' • ');
+    if (manualRow) {
+      manualRow.style.display = p.is_exact_stamp ? 'none' : 'block';
+    }
   }
 
   if (b.installed) {
@@ -416,15 +501,9 @@ function updateButtonLabels() {
 
   let ghGoodDesc = 'GitHub (' + repo + ')';
   if (latestGoodBuildInfo && latestGoodBuildInfo.run_number) {
-    const vt = latestGoodBuildInfo.version_tag ? (' • ' + latestGoodBuildInfo.version_tag) : '';
+    const vt = latestGoodBuildInfo.version_tag ? (' / ' + latestGoodBuildInfo.version_tag) : '';
     ghGoodDesc = 'GitHub: Сборка #' + latestGoodBuildInfo.run_number + vt;
   }
-
-  document.getElementById('subDiffFolder').textContent =
-    'Папка ' + srcP + ' ↔ ' + ghGoodDesc;
-
-  document.getElementById('subDiffZip').textContent =
-    (zipP === 'не выбрано' ? 'Выбранный .zip' : zipP) + ' ↔ ' + ghGoodDesc;
 
   document.getElementById('subPushZip').textContent =
     'Откуда: ' + (zipP === 'не выбрано' ? 'выбранный .zip' : zipP) + ' ➔ Куда: GitHub (' + repo + ')';
@@ -451,61 +530,64 @@ function updateButtonLabels() {
     document.getElementById('mainDlGoodZip').textContent =
       '✅ Скачать чистый .zip архив Сборки #' + latestGoodBuildInfo.run_number + vt + ' с GitHub';
   }
+  if (allLoadedRuns.length > 0) {
+    populateComparisonDropdowns(allLoadedRuns);
+  }
 }
 
-async function checkDiffFolder() {
-  if (!checkAndroidStorageState()) {
-    requestAndroidStoragePerm();
-    return;
-  }
+async function runSelectedComparison() {
+  const baseSel = document.getElementById('diffBaseSelect');
+  const targetSel = document.getElementById('diffTargetSelect');
+  const baseSha = baseSel ? baseSel.value : '';
+  const baseOpt = baseSel && baseSel.selectedOptions && baseSel.selectedOptions[0];
+  const baseLabel = baseOpt ? (baseOpt.getAttribute('data-label') || baseOpt.textContent) : '';
+
+  const targetVal = targetSel ? targetSel.value : 'LOCAL_FOLDER';
+  const targetOpt = targetSel && targetSel.selectedOptions && targetSel.selectedOptions[0];
+  const targetLabel = targetOpt ? (targetOpt.getAttribute('data-label') || targetOpt.textContent) : '';
+
   const fp = document.getElementById('sourceFolderInput').value.trim();
-  const panel = document.getElementById('diffReportPanel');
-  const pre = document.getElementById('diffReportPre');
-  panel.style.display = 'block';
-  pre.textContent = '⏳ Сканирую файлы и функции в папке ' + fp + ' и сравниваю с GitHub...';
-  try {
-    const r = await fetch('/api/diff_folder', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({folder_path: fp})
-    });
-    const d = await r.json();
-    if (d.status === 'ok') {
-      lastDiffReportText = d.report_text || '';
-      lastDiffShortCommit = d.short_commit_msg || '';
-      pre.textContent = lastDiffReportText;
-      document.getElementById('diffTitleLbl').textContent =
-        '📊 Изменения в папке: изменено ' + d.modified_count + ', новых ' + d.added_count + ', удалено ' + d.removed_count;
-      if (!document.getElementById('commitMsgInput').value.trim() && lastDiffShortCommit && d.has_changes) {
-        document.getElementById('commitMsgInput').value = lastDiffShortCommit;
-      }
-    } else {
-      pre.textContent = '❌ Ошибка сравнения: ' + d.error;
-    }
-  } catch (e) {
-    pre.textContent = '❌ Ошибка сети: ' + e;
-  }
-}
-
-async function checkDiffZip() {
-  if (!checkAndroidStorageState()) {
-    requestAndroidStoragePerm();
-    return;
-  }
   const zp = document.getElementById('selectedZipPath').value.trim();
-  if (!zp) {
-    showStatus('⚠️ Сначала выбери .zip архив через кнопку «📂 Выбрать .zip»', true);
-    return;
+
+  let payload = {
+    base_sha: baseSha,
+    base_label: baseLabel,
+    folder_path: fp,
+    zip_path: zp
+  };
+
+  if (targetVal === 'LOCAL_FOLDER') {
+    if (!checkAndroidStorageState()) {
+      requestAndroidStoragePerm();
+      return;
+    }
+    payload.target_type = 'folder';
+  } else if (targetVal === 'LOCAL_ZIP') {
+    if (!checkAndroidStorageState()) {
+      requestAndroidStoragePerm();
+      return;
+    }
+    if (!zp) {
+      showStatus('⚠️ Сначала выбери .zip архив через кнопку «📂 Выбрать .zip»', true);
+      return;
+    }
+    payload.target_type = 'zip';
+  } else if (targetVal.indexOf('GH:') === 0) {
+    payload.target_type = 'github_run';
+    payload.target_sha = targetVal.substring(3);
+    payload.target_label = targetLabel;
   }
+
   const panel = document.getElementById('diffReportPanel');
   const pre = document.getElementById('diffReportPre');
   panel.style.display = 'block';
-  pre.textContent = '⏳ Сканирую файлы и функции внутри архива ' + zp + ' и сравниваю с GitHub...';
+  pre.textContent = '⏳ Запрашиваю Git-историю и сверяю все функции и строки кода...';
+
   try {
-    const r = await fetch('/api/diff_zip', {
+    const r = await fetch('/api/compare', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({zip_path: zp})
+      body: JSON.stringify(payload)
     });
     const d = await r.json();
     if (d.status === 'ok') {
@@ -513,7 +595,7 @@ async function checkDiffZip() {
       lastDiffShortCommit = d.short_commit_msg || '';
       pre.textContent = lastDiffReportText;
       document.getElementById('diffTitleLbl').textContent =
-        '📊 Изменения в .zip: изменено ' + d.modified_count + ', новых ' + d.added_count + ', удалено ' + d.removed_count;
+        '📊 Итог сравнения: изменено ' + d.modified_count + ', новых ' + d.added_count + ', удалено ' + d.removed_count;
       if (!document.getElementById('commitMsgInput').value.trim() && lastDiffShortCommit && d.has_changes) {
         document.getElementById('commitMsgInput').value = lastDiffShortCommit;
       }
@@ -545,9 +627,9 @@ function copyDiffReport() {
   } else {
     fallbackCopy();
   }
-  btn.textContent = '✅ СПИСОК ИЗМЕНЕНИЙ СКОПИРОВАН!';
+  btn.textContent = '✅ ОТЧЁТ СКОПИРОВАН В БУФЕР ОБМЕНА!';
   setTimeout(() => {
-    btn.textContent = '📋 Скопировать весь список (для чата)';
+    btn.textContent = '📋 Скопировать весь отчёт (для чата)';
   }, 2500);
 }
 
@@ -555,6 +637,8 @@ function applyShortDiffToCommitMsg() {
   if (lastDiffShortCommit) {
     document.getElementById('commitMsgInput').value = lastDiffShortCommit;
     showStatus('✅ Краткая сводка подставлена в поле «Описание новой сборки»!', false);
+  } else {
+    showStatus('ℹ️ Для сравнения двух уже готовых сборок GitHub сводка коммита не требуется.', false);
   }
 }
 
@@ -702,9 +786,9 @@ async function pushSelectedZipPath() {
     const d = await r.json();
     if (d.status === 'ok') {
       showStatus(
-        '✅ Архив отправлен в GitHub (' + repo + ')!\n' +
-        '• Описание: «' + d.commit_msg + '»\n' +
-        '• Обновлено файлов: ' + d.changed_files + ' из ' + d.total_files + '\n' +
+        '✅ Архив отправлен в GitHub (' + repo + ')!\\n' +
+        '• Описание: «' + d.commit_msg + '»\\n' +
+        '• Обновлено файлов: ' + d.changed_files + ' из ' + d.total_files + '\\n' +
         '• Запущена новая сборка APK — её номер и этапы появятся ниже через пару секунд!',
         false
       );
@@ -736,9 +820,9 @@ function pushSystemFileZip(inputEl) {
       const d = await r.json();
       if (d.status === 'ok') {
         showStatus(
-          '✅ Архив ' + file.name + ' отправлен в GitHub (' + repo + ')!\n' +
-          '• Описание: «' + d.commit_msg + '»\n' +
-          '• Обновлено файлов: ' + d.changed_files + ' из ' + d.total_files + '\n' +
+          '✅ Архив ' + file.name + ' отправлен в GitHub (' + repo + ')!\\n' +
+          '• Описание: «' + d.commit_msg + '»\\n' +
+          '• Обновлено файлов: ' + d.changed_files + ' из ' + d.total_files + '\\n' +
           '• Запущена новая сборка APK!',
           false
         );
@@ -772,11 +856,11 @@ async function pushLocalFolder() {
     const d = await r.json();
     if (d.status === 'ok') {
       showStatus(
-        '✅ Экспорт папки завершён!\n' +
-        '• Откуда: ' + fp + '\n' +
-        '• Куда: GitHub (' + repo + ')\n' +
-        '• Описание: «' + d.commit_msg + '»\n' +
-        '• Обновлено файлов: ' + d.changed_files + ' из ' + d.total_files + '\n' +
+        '✅ Экспорт папки завершён!\\n' +
+        '• Откуда: ' + fp + '\\n' +
+        '• Куда: GitHub (' + repo + ')\\n' +
+        '• Описание: «' + d.commit_msg + '»\\n' +
+        '• Обновлено файлов: ' + d.changed_files + ' из ' + d.total_files + '\\n' +
         '• Сборка APK запущена — следи за прогрессом внизу!',
         false
       );
@@ -806,9 +890,9 @@ async function pullFromGithubToFolder() {
     const d = await r.json();
     if (d.status === 'ok') {
       showStatus(
-        '✅ Импорт с GitHub в рабочую папку завершён!\n' +
-        '• Что скачано: ' + (d.human_label || ('Сборка #' + d.build_number)) + '\n' +
-        '• Куда распаковано: ' + d.folder_path + '\n' +
+        '✅ Импорт с GitHub в рабочую папку завершён!\\n' +
+        '• Что скачано: ' + (d.human_label || ('Сборка #' + d.build_number)) + '\\n' +
+        '• Куда распаковано: ' + d.folder_path + '\\n' +
         '• Обновлено файлов: ' + d.written_files,
         false
       );
@@ -841,9 +925,9 @@ async function unpackSelectedZipToFolder() {
     const d = await r.json();
     if (d.status === 'ok') {
       showStatus(
-        '✅ Архив успешно распакован в рабочую папку!\n' +
-        '• Из архива: ' + d.zip_path + '\n' +
-        '• В рабочую папку: ' + d.folder_path + '\n' +
+        '✅ Архив успешно распакован в рабочую папку!\\n' +
+        '• Из архива: ' + d.zip_path + '\\n' +
+        '• В рабочую папку: ' + d.folder_path + '\\n' +
         '• Записано файлов: ' + d.written_files,
         false
       );
@@ -874,8 +958,8 @@ async function packLocalFolderToZip() {
       document.getElementById('selectedZipPath').value = d.zip_path;
       updateButtonLabels();
       showStatus(
-        '✅ Рабочая папка упакована в чистый .zip!\n' +
-        '• Из папки: ' + d.folder_path + ' (файлов: ' + d.files_count + ')\n' +
+        '✅ Рабочая папка упакована в чистый .zip!\\n' +
+        '• Из папки: ' + d.folder_path + ' (файлов: ' + d.files_count + ')\\n' +
         '• Куда сохранён архив: ' + d.zip_path + ' (' + d.size_mb + ' МБ)',
         false
       );
@@ -905,8 +989,8 @@ async function downloadLastGoodZip() {
       document.getElementById('selectedZipPath').value = d.zip_path;
       updateButtonLabels();
       showStatus(
-        '✅ Чистый .zip архив скачан с GitHub!\n' +
-        '• Что скачано: ' + (d.human_label || ('Сборка #' + d.build_number)) + '\n' +
+        '✅ Чистый .zip архив скачан с GitHub!\\n' +
+        '• Что скачано: ' + (d.human_label || ('Сборка #' + d.build_number)) + '\\n' +
         '• Куда сохранён файл: ' + d.zip_path + ' (' + d.size_mb + ' МБ)',
         false
       );
@@ -935,8 +1019,8 @@ async function downloadRunApk(runId, runNum, verTag) {
     const d = await r.json();
     if (d.status === 'ok') {
       showStatus(
-        '✅ Готовый APK успешно скачан!\n' +
-        '• Сборка: #' + runNum + verLabel + '\n' +
+        '✅ Готовый APK успешно скачан!\\n' +
+        '• Сборка: #' + runNum + verLabel + '\\n' +
         '• Файл сохранён в: ' + d.apk_path + ' (' + d.size_mb + ' МБ)',
         false
       );
@@ -963,15 +1047,18 @@ async function loadRuns() {
 
     if (d.latest_good) {
       latestGoodBuildInfo = d.latest_good;
-      updateButtonLabels();
     }
     if (d.installed) {
       renderInstalledStatus(d.installed);
     }
 
+    const runs = d.runs || [];
+    allLoadedRuns = runs;
+    populateComparisonDropdowns(runs);
+    updateButtonLabels();
+
     const instPlayerBuild = (currentInstalledState && currentInstalledState.player) ? currentInstalledState.player.build_number : null;
 
-    const runs = d.runs || [];
     const listEl = document.getElementById('runsListContainer');
     const saveFolderShort = shortPath(document.getElementById('saveDirInput').value.trim() || '/storage/emulated/0/Download');
     let html = '';

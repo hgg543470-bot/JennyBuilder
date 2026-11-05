@@ -33,6 +33,21 @@ _MEM_CFG = {}
 _CACHED_RUNS_LIST = []
 
 
+def _is_ignored_rel_path(rel_path: str) -> bool:
+    if not rel_path:
+        return True
+    norm = rel_path.replace("\\", "/").lstrip("/")
+    parts = [p for p in norm.split("/") if p]
+    if not parts:
+        return True
+    if any(p in EXCLUDE_DIRS for p in parts):
+        return True
+    fname = parts[-1]
+    if fname in EXCLUDE_FILES or os.path.splitext(fname)[1].lower() in EXCLUDE_EXTS:
+        return True
+    return False
+
+
 def _get_config_paths():
     paths = []
     internal_dir = (os.environ.get("JENNY_FILES_DIR") or "").strip()
@@ -179,7 +194,7 @@ def load_config() -> dict:
         "save_dir": DEFAULT_SAVE_DIR,
         "source_dir": DEFAULT_PROJECT_DIR,
         "browse_dir": DEFAULT_SAVE_DIR,
-        "last_downloaded_map": {},
+        "manual_installed_build": None,
     }
     if _MEM_CFG:
         cfg.update(_MEM_CFG)
@@ -190,7 +205,7 @@ def load_config() -> dict:
                 saved = json.load(open(p, "r", encoding="utf-8"))
                 if isinstance(saved, dict):
                     for k, v in saved.items():
-                        if v or not cfg.get(k):
+                        if v is not None and (v != "" or not cfg.get(k)):
                             cfg[k] = v
         except Exception:
             pass
@@ -236,11 +251,10 @@ def _extract_version_tag(title: str) -> str:
 
 
 # ==============================================================================
-# LUCKY-PATCHER ДЕТЕКТОР УСТАНОВЛЕННОЙ СЕЙЧАС СБОРКИ И ВЕРСИИ НА ТЕЛЕФОНЕ
+# ТОЧНОЕ ОПРЕДЕЛЕНИЕ УСТАНОВЛЕННОЙ СБОРКИ ЧЕРЕЗ ПАСПОРТ APK (БЕЗ УГАДЫВАНИЯ)
 # ==============================================================================
 
 def _query_android_package_native(pkg_name: str) -> dict:
-    """Читает PackageInfo напрямую через Chaquopy PackageManager (если доступно)."""
     try:
         from com.chaquo.python import Python
         ctx = Python.getPlatform().getApplication()
@@ -272,104 +286,17 @@ def _query_android_package_native(pkg_name: str) -> dict:
         return {"installed": False, "package": pkg_name}
 
 
-def _scan_apk_binary_for_version_and_crc(apk_path: str) -> dict:
-    """
-    Сканирует установленный на телефоне /data/app/.../base.apk:
-    1. Считает размер файла и CRC32 classes.dex (для 100% сверки со скачанными .apk в Download).
-    2. Ищет внутри classes.dex и assets/chaquopy/app.imy максимальный тег версии (например V165 -> v165).
-    """
-    res = {
-        "apk_size": 0,
-        "dex_crc": 0,
-        "detected_vtag": "",
-        "stamp_build_num": None,
-        "stamp_title": "",
-    }
-    if not apk_path or not os.path.isfile(apk_path):
-        return res
-    try:
-        res["apk_size"] = os.path.getsize(apk_path)
-        max_v_num = 0
-        with zipfile.ZipFile(apk_path, "r") as zf:
-            names = zf.namelist()
-            if "classes.dex" in names:
-                info = zf.getinfo("classes.dex")
-                res["dex_crc"] = info.CRC
-                raw_dex = zf.read("classes.dex")
-                # Ищем маркеры вида V165, V164, v165: и т.д.
-                for m in re.finditer(rb"(?:V|v)(1[1-9]\d|[2-9]\d\d)\b", raw_dex):
-                    v_int = int(m.group(1))
-                    if 110 <= v_int <= 999 and v_int > max_v_num:
-                        max_v_num = v_int
-
-            # Также проверяем вложенный архив Chaquopy (assets/chaquopy/app.imy), где лежит index.html
-            for nm in names:
-                if nm.endswith(".imy") and "app" in nm:
-                    try:
-                        imy_bytes = zf.read(nm)
-                        with zipfile.ZipFile(io.BytesIO(imy_bytes), "r") as z_imy:
-                            for sub_nm in z_imy.namelist():
-                                if sub_nm.endswith((".html", ".py", ".json")):
-                                    sub_raw = z_imy.read(sub_nm)
-                                    for m in re.finditer(rb"\b[Vv](1[1-9]\d|[2-9]\d\d)\b", sub_raw):
-                                        v_int = int(m.group(1))
-                                        if 110 <= v_int <= 999 and v_int > max_v_num:
-                                            max_v_num = v_int
-                    except Exception:
-                        pass
-
-        if max_v_num > 0:
-            res["detected_vtag"] = f"v{max_v_num}"
-    except Exception:
-        pass
-    return res
-
-
-def _match_apk_in_download_dir(apk_size: int, dex_crc: int, save_dir: str) -> dict:
-    """Проверяет, совпадает ли установленный base.apk по CRC/размеру с одним из скачанных .apk в папке Download."""
-    if not apk_size and not dex_crc:
-        return {}
-    dirs_to_check = [save_dir, DEFAULT_SAVE_DIR]
-    for d in dirs_to_check:
-        if not d or not os.path.isdir(d):
-            continue
-        try:
-            for entry in os.listdir(d):
-                if not entry.lower().endswith(".apk"):
-                    continue
-                fp = os.path.join(d, entry)
-                if not os.path.isfile(fp):
-                    continue
-                if apk_size and os.path.getsize(fp) == apk_size:
-                    m_b = re.search(r"(?:_#|_b)(\d+)", entry)
-                    m_v = re.search(r"_(v\d+(?:\.\d+)?)", entry, re.IGNORECASE)
-                    return {
-                        "matched_file": entry,
-                        "build_number": int(m_b.group(1)) if m_b else None,
-                        "version_tag": m_v.group(1).lower() if m_v else "",
-                    }
-                if dex_crc:
-                    try:
-                        with zipfile.ZipFile(fp, "r") as zf:
-                            if "classes.dex" in zf.namelist() and zf.getinfo("classes.dex").CRC == dex_crc:
-                                m_b = re.search(r"(?:_#|_b)(\d+)", entry)
-                                m_v = re.search(r"_(v\d+(?:\.\d+)?)", entry, re.IGNORECASE)
-                                return {
-                                    "matched_file": entry,
-                                    "build_number": int(m_b.group(1)) if m_b else None,
-                                    "version_tag": m_v.group(1).lower() if m_v else "",
-                                }
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-    return {}
-
-
 def resolve_installed_apps_status(bridge_hints: dict = None, runs_list: list = None) -> dict:
+    """
+    Определяет установленную сборку строго по:
+    1. Штампу GitHub Actions в versionName ("#252 (v166...)") или versionCode == run_number.
+    2. Если установлен старый APK (versionCode == 1 без штампа # в versionName) — берёт номер сборки,
+       который был скачан/выбран пользователем (или последнюю сборку #251, если она только что скачана).
+    Никакого сканирования случайных файлов в Download!
+    """
     cfg = load_config()
-    save_dir = cfg.get("save_dir") or DEFAULT_SAVE_DIR
     runs = runs_list if runs_list is not None else _CACHED_RUNS_LIST
+    manual_bnum = cfg.get("manual_installed_build")
 
     out = {}
     for key, pkg in (("player", "com.jenny.player"), ("builder", "com.jenny.builder")):
@@ -384,7 +311,7 @@ def resolve_installed_apps_status(bridge_hints: dict = None, runs_list: list = N
             continue
 
         ver_name = (raw.get("versionName") or "").strip()
-        apk_path = (raw.get("apkPath") or "").strip()
+        v_code = int(raw.get("versionCode") or 0)
         upd_ms = int(raw.get("lastUpdateTime") or 0)
         upd_str = ""
         if upd_ms > 0:
@@ -393,56 +320,52 @@ def resolve_installed_apps_status(bridge_hints: dict = None, runs_list: list = N
             except Exception:
                 pass
 
-        # 1. Проверяем, зашит ли уже штамп "#251 (v165...)" прямо в versionName
         build_num = None
         vtag = ""
         commit_title = ""
+        commit_sha = ""
+        is_exact_stamp = False
 
+        # 1. Точный штамп в versionName: "#251 (...)"
         m_stamp = re.search(r"#(\d+)\s*(?:\((.*)\))?", ver_name)
         if m_stamp:
             build_num = int(m_stamp.group(1))
             commit_title = (m_stamp.group(2) or "").strip()
             vtag = _extract_version_tag(commit_title) or _extract_version_tag(ver_name)
+            is_exact_stamp = True
+        elif v_code > 10 and key == "player":
+            # Точный штамп в versionCode == GITHUB_RUN_NUMBER
+            build_num = v_code
+            is_exact_stamp = True
 
-        # 2. Сканируем сам установленный APK (/data/app/.../base.apk) и сверяем с файлами в Download и историей GitHub
-        scan = _scan_apk_binary_for_version_and_crc(apk_path)
-        if not vtag and scan.get("detected_vtag"):
-            vtag = scan["detected_vtag"]
+        # 2. Если это старый APK плеера без штампа (versionCode <= 10), используем выбранный/скачанный пользователем номер сборки
+        if key == "player" and not build_num and manual_bnum:
+            try:
+                build_num = int(manual_bnum)
+            except Exception:
+                pass
 
-        dl_match = _match_apk_in_download_dir(scan.get("apk_size", 0), scan.get("dex_crc", 0), save_dir)
-        if not build_num and dl_match.get("build_number"):
-            build_num = dl_match["build_number"]
-        if not vtag and dl_match.get("version_tag"):
-            vtag = dl_match["version_tag"]
+        # 3. Обогащаем полными данными из истории GitHub Actions по номеру сборки
+        if key == "player" and runs and build_num:
+            for r in runs:
+                if r.get("run_number") == build_num:
+                    commit_title = r.get("title") or commit_title
+                    vtag = r.get("version_tag") or vtag
+                    commit_sha = r.get("head_sha") or ""
+                    break
 
-        # 3. Если это целевой плеер (com.jenny.player) — связываем со списком сборок GitHub Actions
-        if key == "player" and runs:
-            if build_num:
-                for r in runs:
-                    if r.get("run_number") == build_num:
-                        commit_title = commit_title or r.get("title") or ""
-                        vtag = vtag or r.get("version_tag") or ""
-                        break
-            elif vtag:
-                # Ищем последнюю успешную сборку с этим же тегом версии (например v165 -> #251)
-                for r in runs:
-                    if r.get("conclusion") == "success" and (r.get("version_tag") or "").lower() == vtag.lower():
-                        build_num = r.get("run_number")
-                        commit_title = r.get("title") or ""
-                        break
-
-        # Формируем понятную человеку карточку установленной версии
         if key == "player":
-            parts = []
             if build_num:
-                parts.append(f"Сборка #{build_num}")
-            if vtag:
-                parts.append(f"версия {vtag}")
-            if not parts and ver_name:
-                parts.append(f"версия APK {ver_name}")
-            summary = " • ".join(parts) if parts else "Установлен (номер сборки определится после обновления)"
-            if commit_title:
-                summary += f" — «{commit_title}»"
+                parts = [f"Сборка #{build_num}"]
+                if vtag:
+                    parts.append(vtag)
+                if commit_sha:
+                    parts.append(f"ID: {commit_sha}")
+                summary = " / ".join(parts)
+                if commit_title:
+                    summary += f" — «{commit_title}»"
+            else:
+                summary = f"APK без штампа номера (versionName: {ver_name}) — выбери установленную сборку ниже"
         else:
             summary = f"Версия {ver_name}" if ver_name else "Установлен"
 
@@ -450,12 +373,13 @@ def resolve_installed_apps_status(bridge_hints: dict = None, runs_list: list = N
             "installed": True,
             "package": pkg,
             "versionName": ver_name,
-            "versionCode": raw.get("versionCode"),
+            "versionCode": v_code,
             "updated_at": upd_str,
             "build_number": build_num,
             "version_tag": vtag,
+            "commit_sha": commit_sha,
             "title": commit_title,
-            "matched_apk_file": dl_match.get("matched_file") or "",
+            "is_exact_stamp": is_exact_stamp,
             "human_summary": summary,
         }
 
@@ -469,7 +393,7 @@ def gh_api(endpoint: str, method: str = "GET", payload: dict = None, token: str 
     url = endpoint if endpoint.startswith("http") else f"https://api.github.com/repos/{rep}/{endpoint.lstrip('/')}"
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "JennyBuilder-Android/1.5",
+        "User-Agent": "JennyBuilder-Android/1.6",
     }
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
@@ -505,7 +429,7 @@ def gh_download_bytes(endpoint: str, token: str = "", repo: str = "") -> bytes:
     url = endpoint if endpoint.startswith("http") else f"https://api.github.com/repos/{rep}/{endpoint.lstrip('/')}"
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "JennyBuilder-Android/1.5",
+        "User-Agent": "JennyBuilder-Android/1.6",
     }
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
@@ -533,9 +457,12 @@ def _describe_run_or_commit(sha: str = "", run_obj: dict = None) -> dict:
         bnum = run_obj.get("run_number") or ""
         title = (run_obj.get("display_title") or run_obj.get("name") or "").strip()
         vtag = _extract_version_tag(title)
+        r_sha = (run_obj.get("head_sha") or sha or "")[:7]
         human = f"Сборка #{bnum}" if bnum else "Сборка"
         if vtag:
-            human += f" ({vtag})"
+            human += f" / {vtag}"
+        if r_sha:
+            human += f" (ID: {r_sha})"
         if title:
             human += f" — «{title}»"
         return {
@@ -543,11 +470,24 @@ def _describe_run_or_commit(sha: str = "", run_obj: dict = None) -> dict:
             "version_tag": vtag,
             "title": title,
             "human_label": human,
-            "sha": (run_obj.get("head_sha") or sha or "")[:7],
+            "sha": r_sha,
+            "full_sha": run_obj.get("head_sha") or sha or "",
         }
 
+    for r in _CACHED_RUNS_LIST:
+        r_sha = r.get("full_sha") or r.get("head_sha") or ""
+        if sha and (r_sha.startswith(sha) or sha.startswith(r_sha)):
+            return {
+                "build_number": r.get("run_number"),
+                "version_tag": r.get("version_tag"),
+                "title": r.get("title"),
+                "human_label": f"Сборка #{r.get('run_number')} / {r.get('version_tag') or ''} (ID: {r.get('head_sha')}) — «{r.get('title')}»",
+                "sha": (r.get("head_sha") or "")[:7],
+                "full_sha": r.get("full_sha") or "",
+            }
+
     try:
-        runs_data = gh_api("actions/runs?per_page=10", "GET")
+        runs_data = gh_api("actions/runs?per_page=30", "GET")
         for r in runs_data.get("workflow_runs", []):
             r_sha = r.get("head_sha") or ""
             if sha and (r_sha.startswith(sha) or sha.startswith(r_sha)):
@@ -567,7 +507,9 @@ def _describe_run_or_commit(sha: str = "", run_obj: dict = None) -> dict:
         except Exception:
             pass
     vtag = _extract_version_tag(title)
-    human = f"Версия {vtag}" if vtag else "Последняя версия"
+    human = f"Версия {vtag}" if vtag else "Коммит"
+    if sha:
+        human += f" (ID: {sha[:7]})"
     if title:
         human += f" — «{title}»"
     return {
@@ -576,6 +518,7 @@ def _describe_run_or_commit(sha: str = "", run_obj: dict = None) -> dict:
         "title": title,
         "human_label": human,
         "sha": (sha or "")[:7],
+        "full_sha": sha or "",
     }
 
 
@@ -585,7 +528,7 @@ def _git_blob_sha1(data: bytes) -> str:
 
 
 # ==============================================================================
-# АНАЛИЗАТОР ИЗМЕНЕНИЙ В ФУНКЦИЯХ, КЛАССАХ И СТРОКАХ (ДЛЯ PY, HTML/JS, JAVA, XML)
+# ПОЛНЫЙ GIT-АНАЛИЗАТОР ИЗМЕНЕНИЙ (МЕЖДУ ЛЮБЫМИ СБОРКАМИ ИЛИ ЛОКАЛЬНОЙ ПАПКОЙ)
 # ==============================================================================
 
 def _extract_python_symbols(text: str) -> dict:
@@ -641,10 +584,10 @@ def _extract_python_symbols(text: str) -> dict:
         return symbols
 
 
-def _extract_brace_blocks(text: str, pattern: re.Pattern, kind_Formatter) -> dict:
+def _extract_brace_blocks(text: str, pattern: re.Pattern, kind_formatter) -> dict:
     symbols = {}
     for m in pattern.finditer(text):
-        name, sig = kind_Formatter(m)
+        name, sig = kind_formatter(m)
         if not name or name in ("if", "for", "while", "switch", "catch", "synchronized", "function"):
             continue
         brace_open = text.find("{", m.end() - 1)
@@ -698,7 +641,7 @@ def _extract_java_symbols(text: str) -> dict:
     return _extract_brace_blocks(text, pat, fmt)
 
 
-def _compact_unified_diff(old_str: str, new_str: str, max_lines: int = 18) -> list:
+def _compact_unified_diff(old_str: str, new_str: str, max_lines: int = 24) -> list:
     old_lines = old_str.splitlines()
     new_lines = new_str.splitlines()
     diff = list(difflib.unified_diff(old_lines, new_lines, n=1, lineterm=""))
@@ -708,8 +651,8 @@ def _compact_unified_diff(old_str: str, new_str: str, max_lines: int = 18) -> li
             continue
         if ln.startswith(("+", "-")):
             clean = ln[0] + " " + ln[1:].strip()
-            if len(clean) > 110:
-                clean = clean[:107] + "..."
+            if len(clean) > 120:
+                clean = clean[:117] + "..."
             out.append(clean)
             if len(out) >= max_lines:
                 out.append("  ... (остальные строки опущены)")
@@ -717,7 +660,7 @@ def _compact_unified_diff(old_str: str, new_str: str, max_lines: int = 18) -> li
     return out
 
 
-def _analyze_single_file_diff(rel_path: str, old_bytes: bytes, new_bytes: bytes) -> dict:
+def _analyze_single_file_diff(rel_path: str, old_bytes: bytes, new_bytes: bytes, git_patch_str: str = "") -> dict:
     ext = os.path.splitext(rel_path)[1].lower()
     binary_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".so", ".jar", ".apk", ".zip", ".keystore", ".jks"}
     if ext in binary_exts:
@@ -735,26 +678,31 @@ def _analyze_single_file_diff(rel_path: str, old_bytes: bytes, new_bytes: bytes)
             "raw_diff_preview": [f"Бинарный файл: было {old_kb} КБ ➔ стало {new_kb} КБ"],
         }
 
-    old_text = old_bytes.decode("utf-8", errors="replace")
-    new_text = new_bytes.decode("utf-8", errors="replace")
+    old_text = old_bytes.decode("utf-8", errors="replace") if old_bytes else ""
+    new_text = new_bytes.decode("utf-8", errors="replace") if new_bytes else ""
 
-    old_lines = old_text.splitlines()
-    new_lines = new_text.splitlines()
-    u_diff = list(difflib.unified_diff(old_lines, new_lines, n=0, lineterm=""))
-    plus_cnt = sum(1 for l in u_diff if l.startswith("+") and not l.startswith("+++"))
-    minus_cnt = sum(1 for l in u_diff if l.startswith("-") and not l.startswith("---"))
+    if old_bytes or new_bytes:
+        old_lines = old_text.splitlines()
+        new_lines = new_text.splitlines()
+        u_diff = list(difflib.unified_diff(old_lines, new_lines, n=0, lineterm=""))
+        plus_cnt = sum(1 for l in u_diff if l.startswith("+") and not l.startswith("+++"))
+        minus_cnt = sum(1 for l in u_diff if l.startswith("-") and not l.startswith("---"))
+    else:
+        plus_cnt = sum(1 for l in git_patch_str.splitlines() if l.startswith("+") and not l.startswith("+++"))
+        minus_cnt = sum(1 for l in git_patch_str.splitlines() if l.startswith("-") and not l.startswith("---"))
 
     old_syms = {}
     new_syms = {}
-    if ext == ".py":
-        old_syms = _extract_python_symbols(old_text)
-        new_syms = _extract_python_symbols(new_text)
-    elif ext in (".html", ".js"):
-        old_syms = _extract_js_symbols(old_text)
-        new_syms = _extract_js_symbols(new_text)
-    elif ext == ".java":
-        old_syms = _extract_java_symbols(old_text)
-        new_syms = _extract_java_symbols(new_text)
+    if old_text or new_text:
+        if ext == ".py":
+            old_syms = _extract_python_symbols(old_text)
+            new_syms = _extract_python_symbols(new_text)
+        elif ext in (".html", ".js"):
+            old_syms = _extract_js_symbols(old_text)
+            new_syms = _extract_js_symbols(new_text)
+        elif ext == ".java":
+            old_syms = _extract_java_symbols(old_text)
+            new_syms = _extract_java_symbols(new_text)
 
     added_funcs = []
     removed_funcs = []
@@ -767,12 +715,22 @@ def _analyze_single_file_diff(rel_path: str, old_bytes: bytes, new_bytes: bytes)
                 added_funcs.append(info["sig"])
             elif old_syms[k]["body"] != info["body"]:
                 modified_funcs.append(info["sig"])
-                func_diffs[info["sig"]] = _compact_unified_diff(old_syms[k]["body"], info["body"], max_lines=10)
+                func_diffs[info["sig"]] = _compact_unified_diff(old_syms[k]["body"], info["body"], max_lines=14)
         for k, info in old_syms.items():
             if k not in new_syms:
                 removed_funcs.append(info["sig"])
 
-    raw_preview = _compact_unified_diff(old_text, new_text, max_lines=16)
+    if git_patch_str:
+        patch_preview = []
+        for ln in git_patch_str.splitlines():
+            if ln.startswith(("@@", "+", "-")) and not ln.startswith(("---", "+++")):
+                patch_preview.append(ln[:125] + ("..." if len(ln) > 125 else ""))
+                if len(patch_preview) >= 28:
+                    patch_preview.append("  ... (остальные строки git patch опущены)")
+                    break
+        raw_preview = patch_preview
+    else:
+        raw_preview = _compact_unified_diff(old_text, new_text, max_lines=22)
 
     return {
         "path": rel_path,
@@ -787,22 +745,171 @@ def _analyze_single_file_diff(rel_path: str, old_bytes: bytes, new_bytes: bytes)
     }
 
 
-def compare_local_map_with_github(local_map: dict, source_label: str, token: str = "", repo: str = "") -> dict:
+def _fetch_blob_bytes(blob_sha: str, token: str = "", repo: str = "") -> bytes:
+    if not blob_sha:
+        return b""
+    try:
+        blob_obj = gh_api(f"git/blobs/{blob_sha}", "GET", token=token, repo=repo)
+        b64_content = (blob_obj.get("content") or "").replace("\n", "").replace("\r", "")
+        return base64.b64decode(b64_content) if b64_content else b""
+    except Exception:
+        return b""
+
+
+def compare_two_github_commits(base_sha: str, head_sha: str, base_label: str = "", head_label: str = "", token: str = "", repo: str = "") -> dict:
+    """
+    Использует родной Git Compare API GitHub (/compare/{base}...{head}):
+    выдаёт список всех коммитов между двумя сборками, список изменённых функций и точный git diff!
+    """
+    cfg = load_config()
+    rep = (repo or cfg.get("repo") or DEFAULT_REPO).strip()
+    base_meta = _describe_run_or_commit(base_sha, None)
+    head_meta = _describe_run_or_commit(head_sha, None)
+    b_lbl = base_label or base_meta.get("human_label") or base_sha[:7]
+    h_lbl = head_label or head_meta.get("human_label") or head_sha[:7]
+
+    if base_sha == head_sha or (base_sha and head_sha and base_sha[:7] == head_sha[:7]):
+        txt = (
+            "==========================================================\n"
+            "📊 GIT DIFF: СРАВНЕНИЕ СБОРОК\n"
+            "==========================================================\n"
+            f"• База (Откуда): {b_lbl}\n"
+            f"• Цель (Куда):   {h_lbl}\n"
+            "----------------------------------------------------------\n"
+            "✅ Выбрана одна и та же сборка (0 отличий)."
+        )
+        return {
+            "has_changes": False,
+            "short_commit_msg": "",
+            "report_text": txt,
+            "modified_count": 0,
+            "added_count": 0,
+            "removed_count": 0,
+        }
+
+    comp = gh_api(f"compare/{base_sha}...{head_sha}", "GET", token=token, repo=rep)
+    commits = comp.get("commits") or []
+    files = comp.get("files") or []
+
+    # Получаем деревья base и head для AST-сравнения функций в изменённых исходниках
+    base_tree_map = {}
+    head_tree_map = {}
+    try:
+        bc = gh_api(f"git/commits/{base_sha}", "GET", token=token, repo=rep)
+        bt = gh_api(f"git/trees/{bc['tree']['sha']}?recursive=1", "GET", token=token, repo=rep)
+        base_tree_map = {it["path"]: it["sha"] for it in bt.get("tree", []) if it.get("type") == "blob"}
+    except Exception:
+        pass
+    try:
+        hc = gh_api(f"git/commits/{head_sha}", "GET", token=token, repo=rep)
+        ht = gh_api(f"git/trees/{hc['tree']['sha']}?recursive=1", "GET", token=token, repo=rep)
+        head_tree_map = {it["path"]: it["sha"] for it in ht.get("tree", []) if it.get("type") == "blob"}
+    except Exception:
+        pass
+
+    clean_files = [f for f in files if not _is_ignored_rel_path(f.get("filename") or "")]
+    added_files = [f for f in clean_files if f.get("status") == "added"]
+    removed_files = [f for f in clean_files if f.get("status") == "removed"]
+    modified_files = [f for f in clean_files if f.get("status") not in ("added", "removed")]
+
+    report_lines = []
+    report_lines.append("==========================================================")
+    report_lines.append("📊 ТОЧНЫЙ GIT DIFF МЕЖДУ СБОРКАМИ НА GITHUB")
+    report_lines.append("==========================================================")
+    report_lines.append(f"• Старая сборка (База): {b_lbl}")
+    report_lines.append(f"• Новая сборка (Цель):  {h_lbl}")
+    report_lines.append(
+        f"• Коммитов между ними: {len(commits)} | Файлов изменено: {len(modified_files)} | "
+        f"добавлено: {len(added_files)} | удалено: {len(removed_files)}"
+    )
+    report_lines.append("----------------------------------------------------------")
+
+    if commits:
+        report_lines.append(f"\n📜 ИСТОРИЯ КОММИТОВ МЕЖДУ СБОРКАМИ ({len(commits)}):")
+        for c in commits:
+            c_sha = (c.get("sha") or "")[:7]
+            c_msg = ((c.get("commit") or {}).get("message") or "").splitlines()[0]
+            c_date = (((c.get("commit") or {}).get("author") or {}).get("date") or "").replace("T", " ")[:16]
+            report_lines.append(f"  • [{c_sha}] ({c_date}) {c_msg}")
+
+    if added_files:
+        report_lines.append(f"\n🟢 ДОБАВЛЕННЫЕ ФАЙЛЫ ({len(added_files)}):")
+        for af in added_files:
+            fn = af["filename"]
+            report_lines.append(f"  + {fn} (+{af.get('additions', 0)} строк)")
+
+    if removed_files:
+        report_lines.append(f"\n🔴 УДАЛЁННЫЕ ФАЙЛЫ ({len(removed_files)}):")
+        for rf in removed_files:
+            fn = rf["filename"]
+            report_lines.append(f"  - {fn} (-{rf.get('deletions', 0)} строк)")
+
+    if modified_files:
+        report_lines.append(f"\n🟡 ИЗМЕНЁННЫЕ ФАЙЛЫ, ФУНКЦИИ И GIT PATCH ({len(modified_files)}):")
+        for mf in modified_files:
+            mp = mf["filename"]
+            patch_str = mf.get("patch") or ""
+            ext = os.path.splitext(mp)[1].lower()
+            old_b = b""
+            new_b = b""
+            if ext in (".py", ".html", ".js", ".java") and base_tree_map.get(mp) and head_tree_map.get(mp):
+                old_b = _fetch_blob_bytes(base_tree_map[mp], token=token, repo=rep)
+                new_b = _fetch_blob_bytes(head_tree_map[mp], token=token, repo=rep)
+
+            f_diff = _analyze_single_file_diff(mp, old_b, new_b, git_patch_str=patch_str)
+            report_lines.append(
+                f"\n📄 Файл: {mp} (+{mf.get('additions', f_diff['added_lines'])} / -{mf.get('deletions', f_diff['removed_lines'])} строк)"
+            )
+            if f_diff["added_funcs"]:
+                report_lines.append(f"  🟢 Добавлены функции ({len(f_diff['added_funcs'])}):")
+                for fn in f_diff["added_funcs"]:
+                    report_lines.append(f"    + {fn}")
+            if f_diff["removed_funcs"]:
+                report_lines.append(f"  🔴 Удалены функции ({len(f_diff['removed_funcs'])}):")
+                for fn in f_diff["removed_funcs"]:
+                    report_lines.append(f"    - {fn}")
+            if f_diff["modified_funcs"]:
+                report_lines.append(f"  🟡 Изменены внутри функции ({len(f_diff['modified_funcs'])}):")
+                for fn in f_diff["modified_funcs"]:
+                    report_lines.append(f"    ~ {fn}")
+                    for sl in (f_diff["func_diffs"].get(fn) or []):
+                        report_lines.append(f"        {sl}")
+
+            if patch_str:
+                report_lines.append("  🔍 Точный Git Patch по строкам:")
+                for pl in f_diff["raw_diff_preview"]:
+                    report_lines.append(f"    {pl}")
+
+    return {
+        "has_changes": bool(clean_files or commits),
+        "short_commit_msg": "",
+        "report_text": "\n".join(report_lines),
+        "modified_count": len(modified_files),
+        "added_count": len(added_files),
+        "removed_count": len(removed_files),
+    }
+
+
+def compare_local_map_with_github(local_map: dict, source_label: str, base_sha: str = "", base_label: str = "", token: str = "", repo: str = "") -> dict:
     if not local_map:
         raise ValueError("Нет доступных файлов для сравнения (0 файлов). Проверь «Доступ ко всем файлам»!")
 
     cfg = load_config()
     rep = (repo or cfg.get("repo") or DEFAULT_REPO).strip()
-    branch_name, head_sha = _resolve_target_branch(token=token, repo=rep)
-    meta = _describe_run_or_commit(head_sha, None)
+    if not base_sha:
+        _, base_sha = _resolve_target_branch(token=token, repo=rep)
+    meta = _describe_run_or_commit(base_sha, None)
+    b_lbl = base_label or meta.get("human_label") or base_sha[:7]
 
-    commit_info = gh_api(f"git/commits/{head_sha}", "GET", token=token, repo=rep)
+    commit_info = gh_api(f"git/commits/{base_sha}", "GET", token=token, repo=rep)
     base_tree_sha = commit_info["tree"]["sha"]
     tree_info = gh_api(f"git/trees/{base_tree_sha}?recursive=1", "GET", token=token, repo=rep)
+
+    # ВАЖНО: отфильтровываем мусор (__pycache__, .pyc, .log) и на стороне GitHub тоже!
     remote_blobs = {
         item["path"]: item["sha"]
         for item in tree_info.get("tree", [])
-        if item.get("type") == "blob"
+        if item.get("type") == "blob" and not _is_ignored_rel_path(item.get("path") or "")
     }
 
     added_files = []
@@ -811,6 +918,8 @@ def compare_local_map_with_github(local_map: dict, source_label: str, token: str
     unchanged_count = 0
 
     for rel_p, loc_bytes in sorted(local_map.items()):
+        if _is_ignored_rel_path(rel_p):
+            continue
         loc_sha = _git_blob_sha1(loc_bytes)
         rem_sha = remote_blobs.get(rel_p)
         if rem_sha is None:
@@ -826,21 +935,25 @@ def compare_local_map_with_github(local_map: dict, source_label: str, token: str
 
     report_lines = []
     report_lines.append("==========================================================")
-    report_lines.append("📊 ОТЧЁТ ОБ ИЗМЕНЕНИЯХ (ЛОКАЛЬНО vs GITHUB)")
+    report_lines.append("📊 ОТЧЁТ ОБ ИЗМЕНЕНИЯХ (GIT DIFF: СБОРКА vs ЛОКАЛЬНО)")
     report_lines.append("==========================================================")
-    report_lines.append(f"• Локальный источник: {source_label}")
-    report_lines.append(f"• На GitHub сейчас: {rep} | {meta.get('human_label')}")
+    report_lines.append(f"• Базовая сборка на GitHub: {b_lbl}")
+    report_lines.append(f"• Сравниваем с:             {source_label}")
     report_lines.append(
-        f"• Итог по файлам: изменено: {len(modified_paths)} | добавлено: {len(added_files)} | "
-        f"удалено: {len(removed_files)} | без изменений: {unchanged_count}"
+        f"• Итог по чистым файлам кода: изменено: {len(modified_paths)} | добавлено: {len(added_files)} | "
+        f"удалено: {len(removed_files)} | совпадают 1-в-1: {unchanged_count}"
     )
     report_lines.append("----------------------------------------------------------")
 
     if not modified_paths and not added_files and not removed_files:
-        report_lines.append("✅ Полное совпадение! Локальные файлы 1-в-1 совпадают с GitHub (0 изменений).")
+        report_lines.append(
+            f"✅ Код в «{source_label}» на 100% совпадает с «{b_lbl}» (0 отличий в коде)!\n"
+            "💡 Подсказка: если хочешь увидеть разницу со старой сборкой (например #245 или #247), "
+            "просто выбери её в верхнем выпадающем списке «База (С какой сборкой сравнивать)» и нажми кнопку сравнения!"
+        )
         return {
             "has_changes": False,
-            "short_commit_msg": "chore: rebuild without code changes",
+            "short_commit_msg": "",
             "report_text": "\n".join(report_lines),
             "modified_count": 0,
             "added_count": 0,
@@ -867,14 +980,7 @@ def compare_local_map_with_github(local_map: dict, source_label: str, token: str
     if modified_paths:
         report_lines.append(f"\n🟡 ИЗМЕНЁННЫЕ ФАЙЛЫ И ФУНКЦИИ ({len(modified_paths)}):")
         for mp in modified_paths:
-            rem_sha = remote_blobs[mp]
-            try:
-                blob_obj = gh_api(f"git/blobs/{rem_sha}", "GET", token=token, repo=rep)
-                b64_content = (blob_obj.get("content") or "").replace("\n", "").replace("\r", "")
-                old_bytes = base64.b64decode(b64_content) if b64_content else b""
-            except Exception:
-                old_bytes = b""
-
+            old_bytes = _fetch_blob_bytes(remote_blobs[mp], token=token, repo=rep)
             f_diff = _analyze_single_file_diff(mp, old_bytes, local_map[mp])
             report_lines.append(
                 f"\n📄 Файл: {mp} (+{f_diff['added_lines']} / -{f_diff['removed_lines']} строк)"
@@ -898,11 +1004,10 @@ def compare_local_map_with_github(local_map: dict, source_label: str, token: str
                     for sl in sub_lines:
                         report_lines.append(f"        {sl}")
 
-            if not f_diff["added_funcs"] and not f_diff["removed_funcs"] and not f_diff["modified_funcs"]:
-                if f_diff["raw_diff_preview"]:
-                    report_lines.append("  🔍 Изменённые строки:")
-                    for rl in f_diff["raw_diff_preview"]:
-                        report_lines.append(f"    {rl}")
+            if f_diff["raw_diff_preview"]:
+                report_lines.append("  🔍 Построчный diff:")
+                for rl in f_diff["raw_diff_preview"]:
+                    report_lines.append(f"    {rl}")
 
             short_fn_notes = []
             for fn in f_diff["added_funcs"][:2]:
@@ -963,11 +1068,7 @@ def _collect_files_from_zip_bytes(zip_bytes: bytes) -> dict:
                 rel = rel[len(strip_prefix):]
             if not rel or rel.endswith("/"):
                 continue
-            parts = rel.split("/")
-            if any(p in EXCLUDE_DIRS for p in parts):
-                continue
-            fname = parts[-1]
-            if fname in EXCLUDE_FILES or os.path.splitext(fname)[1].lower() in EXCLUDE_EXTS:
+            if _is_ignored_rel_path(rel):
                 continue
             out[rel] = zf.read(info.filename)
     return out
@@ -988,6 +1089,8 @@ def _collect_files_from_folder(folder_path: str) -> dict:
                 continue
             full_p = os.path.join(root, f)
             rel_p = os.path.relpath(full_p, folder_path).replace("\\", "/")
+            if _is_ignored_rel_path(rel_p):
+                continue
             try:
                 out[rel_p] = open(full_p, "rb").read()
             except Exception:
@@ -1010,7 +1113,7 @@ def _resolve_target_branch(token: str = "", repo: str = "") -> tuple:
 
 
 def _ensure_build_yml_stamps_version(file_map: dict):
-    """Автоматически добавляет шаг штамповки номера сборки (#252 + версия) в .github/workflows/build.yml при отправке на GitHub."""
+    """Автоматически добавляет шаг штамповки versionCode = GITHUB_RUN_NUMBER и versionName = #GITHUB_RUN_NUMBER (...) в .github/workflows/build.yml."""
     yml_key = ".github/workflows/build.yml"
     if yml_key in file_map:
         try:
@@ -1020,8 +1123,9 @@ def _ensure_build_yml_stamps_version(file_map: dict):
                 stamp_lines = [
                     "    - name: Штамп номера сборки и версии в APK",
                     "      run: |",
-                    "        SHORT_MSG=$(git log -1 --pretty=%s | tr -d '\"\\' | cut -c1-48)",
-                    '        sed -i "s/versionName \".*\"/versionName \"#${GITHUB_RUN_NUMBER} (${SHORT_MSG})\"/" app/build.gradle',
+                    "        SHORT_MSG=$(git log -1 --pretty=%s | tr -d '\"\\\\' | cut -c1-48)",
+                    '        sed -i "s/versionCode .*/versionCode ${GITHUB_RUN_NUMBER}/" app/build.gradle',
+                    '        sed -i "s/versionName \\".*\\"/versionName \\"#${GITHUB_RUN_NUMBER} (${SHORT_MSG})\\"/" app/build.gradle',
                     "",
                     "    - name: Сборка APK",
                     "      run: gradle assembleDebug",
@@ -1253,7 +1357,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
         if path == "/api/runs":
             try:
                 cfg = load_config()
-                runs_data = gh_api("actions/runs?per_page=8", "GET", token=cfg["token"], repo=cfg["repo"])
+                runs_data = gh_api("actions/runs?per_page=35", "GET", token=cfg["token"], repo=cfg["repo"])
                 runs_list = []
                 latest_good_summary = None
                 for r in runs_data.get("workflow_runs", []):
@@ -1370,9 +1474,45 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 return self._send_json({"status": "ok", "config": cfg})
 
             if path == "/api/installed_info":
+                if data.get("manual_installed_build") is not None:
+                    save_config({"manual_installed_build": int(data["manual_installed_build"])})
                 hints = data.get("bridge_hints") or {}
                 inst = resolve_installed_apps_status(hints, _CACHED_RUNS_LIST)
                 return self._send_json({"status": "ok", "installed": inst})
+
+            if path == "/api/compare":
+                cfg = load_config()
+                base_sha = (data.get("base_sha") or "").strip()
+                base_label = (data.get("base_label") or "").strip()
+                target_type = (data.get("target_type") or "folder").strip()
+                target_sha = (data.get("target_sha") or "").strip()
+                target_label = (data.get("target_label") or "").strip()
+
+                if not base_sha:
+                    _, base_sha = _resolve_target_branch()
+
+                if target_type == "github_run":
+                    if not target_sha:
+                        _, target_sha = _resolve_target_branch()
+                    res = compare_two_github_commits(base_sha, target_sha, base_label=base_label, head_label=target_label)
+                    return self._send_json({"status": "ok", **res})
+
+                elif target_type == "zip":
+                    zip_path = (data.get("zip_path") or "").strip()
+                    if not zip_path or not os.path.isfile(zip_path):
+                        return self._send_json({"status": "error", "error": f"Файл .zip не найден: {zip_path}"})
+                    fmap = _collect_files_from_zip_bytes(open(zip_path, "rb").read())
+                    res = compare_local_map_with_github(fmap, f"Архив {zip_path}", base_sha=base_sha, base_label=base_label)
+                    return self._send_json({"status": "ok", **res})
+
+                else:
+                    folder_p = (data.get("folder_path") or cfg.get("source_dir") or DEFAULT_PROJECT_DIR).strip()
+                    if not os.path.isdir(folder_p):
+                        return self._send_json({"status": "error", "error": f"Папка не найдена: {folder_p}"})
+                    save_config({"source_dir": folder_p})
+                    fmap = _collect_files_from_folder(folder_p)
+                    res = compare_local_map_with_github(fmap, f"Рабочая папка {folder_p}", base_sha=base_sha, base_label=base_label)
+                    return self._send_json({"status": "ok", **res})
 
             if path == "/api/fs/mkdir":
                 parent = (data.get("parent") or DEFAULT_SAVE_DIR).strip()
@@ -1383,30 +1523,6 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 os.makedirs(full_new, exist_ok=True)
                 save_config({"save_dir": full_new, "browse_dir": full_new})
                 return self._send_json({"status": "ok", "created": full_new})
-
-            if path == "/api/diff_folder":
-                cfg = load_config()
-                folder_p = (data.get("folder_path") or cfg.get("source_dir") or DEFAULT_PROJECT_DIR).strip()
-                if not os.path.isdir(folder_p):
-                    return self._send_json({
-                        "status": "error",
-                        "error": f"Папка не найдена или нет доступа: {folder_p}"
-                    })
-                save_config({"source_dir": folder_p})
-                fmap = _collect_files_from_folder(folder_p)
-                res = compare_local_map_with_github(fmap, f"Рабочая папка {folder_p}")
-                return self._send_json({"status": "ok", **res})
-
-            if path == "/api/diff_zip":
-                zip_path = (data.get("zip_path") or "").strip()
-                if not zip_path or not os.path.isfile(zip_path):
-                    return self._send_json({
-                        "status": "error",
-                        "error": f"Файл архива не найден: {zip_path}"
-                    })
-                fmap = _collect_files_from_zip_bytes(open(zip_path, "rb").read())
-                res = compare_local_map_with_github(fmap, f"Архив {zip_path}")
-                return self._send_json({"status": "ok", **res})
 
             if path == "/api/push_local_zip":
                 zip_path = (data.get("zip_path") or "").strip()
@@ -1452,7 +1568,10 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 version_tag = (data.get("version_tag") or "").strip()
                 save_dir = (data.get("save_dir") or cfg.get("save_dir") or DEFAULT_SAVE_DIR).strip()
                 os.makedirs(save_dir, exist_ok=True)
-                save_config({"save_dir": save_dir})
+                try:
+                    save_config({"save_dir": save_dir, "manual_installed_build": int(run_number)})
+                except Exception:
+                    save_config({"save_dir": save_dir})
 
                 arts = gh_api(f"actions/runs/{run_id}/artifacts", "GET")
                 art_list = arts.get("artifacts", [])
