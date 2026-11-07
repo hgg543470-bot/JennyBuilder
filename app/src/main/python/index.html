@@ -54,8 +54,21 @@
   .run-item {
     padding: 8px; border-radius: 8px; background: #0d1117;
     border: 1px solid #21262d; margin-bottom: 6px;
-    display: flex; justify-content: space-between; align-items: center; gap: 6px;
+    display: flex; flex-direction: column; align-items: stretch; gap: 6px;
   }
+  .run-ver {
+    font-size: 11.5px; color: #e6edf3; line-height: 1.35;
+    white-space: normal; word-break: break-word; margin: 2px 0;
+  }
+  .run-ver b { color: #d2a8ff; }
+  .run-btns { display: flex; gap: 5px; justify-content: flex-end; flex-wrap: wrap; }
+  .repo-chip {
+    border: 1px solid #30363d; background: #0d1117; color: #c9d1d9;
+    border-radius: 14px; padding: 5px 10px; font-size: 11.5px; font-weight: 700;
+    cursor: pointer; user-select: none;
+  }
+  .repo-chip.active { border-color: #3fb950; background: rgba(46,160,67,0.22); color: #7ee787; }
+  .repo-chip.del { border-color: #ff7b72; color: #ffa198; background: rgba(248,81,73,0.15); }
   body { padding-bottom: 108px !important; }
   .status-box {
     position: fixed; bottom: 8px; left: 10px; right: 10px; z-index: 8895;
@@ -213,12 +226,19 @@
 
 <div class="card" id="topHeaderCard">
   <div class="card-title">
-    <span>🛠️ JENNY BUILDER v1.8</span>
+    <span>🛠️ JENNY BUILDER v1.9</span>
     <button class="btn" style="width:auto;padding:4px 8px;font-size:11px;" onclick="toggleSettings()">⚙️ Настройки</button>
   </div>
   <div id="settingsArea" style="display:none;margin-top:6px;border-top:1px solid #30363d;padding-top:8px;">
     <div style="font-size:11px;color:#8b949e;margin-bottom:3px;">Репозиторий GitHub (owner/repo):</div>
     <input type="text" id="cfgRepo" placeholder="hgg543470-bot/JennyPlayer" oninput="updateButtonLabels()">
+    <!-- ШАБЛОНЫ РЕПОЗИТОРИЕВ: тап = подставить в строку, сохранить и переключить рабочую папку на одноимённую -->
+    <div style="font-size:10.5px;color:#8b949e;margin-bottom:4px;">Шаблоны (тап — подставит репозиторий, сохранит и выберет одноимённую рабочую папку):</div>
+    <div id="repoTplBar" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;"></div>
+    <div class="grid2" style="margin-bottom:8px;">
+      <button class="btn btn-green" style="font-size:11px;padding:6px;" onclick="addRepoTemplate()">➕ Добавить текущий в шаблоны</button>
+      <button class="btn btn-red" id="btnRepoTplDel" style="font-size:11px;padding:6px;" onclick="toggleRepoTplDelete()">🗑 Удалить шаблон</button>
+    </div>
     <div style="font-size:11px;color:#8b949e;margin-bottom:3px;">Токен GitHub (подхватывается из .git/config или хранится во внутренней памяти):</div>
     <input type="password" id="cfgToken" placeholder="ghp_... или github_pat_...">
     <div class="grid2" style="margin-bottom:6px;">
@@ -283,6 +303,18 @@
       <span class="btn-main">🔍 Сравнить (А ➔ Б) до последнего символа</span>
       <span class="btn-sub" id="subCompareBtn">Показать коммиты, функции (+ / - / ~) и полный Git Diff</span>
     </button>
+
+    <!-- Скачать только изменённые/новые файлы Б относительно А — целиком -->
+    <div class="grid2" style="margin-top:6px;">
+      <button class="btn btn-gold" onclick="exportChangedFiles('zip')">
+        <span class="btn-main">📦 Только изменённые файлы (.zip)</span>
+        <span class="btn-sub">Целиком, с папками — можно распаковать поверх проекта</span>
+      </button>
+      <button class="btn btn-blue" onclick="exportChangedFiles('txt')">
+        <span class="btn-main">📝 Только изменённые в 1 .txt</span>
+        <span class="btn-sub">Целиком, одним файлом — для отправки ИИ</span>
+      </button>
+    </div>
 
     <!-- Панель готового отчёта об изменениях -->
     <div id="diffReportPanel" class="diff-box">
@@ -350,6 +382,15 @@
           <span class="btn-sub" id="subUnpackZip">Из: выбранного .zip ➔ В папку: scripts/JennyPlayer</span>
         </button>
       </div>
+
+      <button class="btn btn-cyan" onclick="exportProjectTxt()">
+        <span class="btn-main">📝 Весь проект в 1 .txt (отправить ИИ)</span>
+        <span class="btn-sub" id="subExportTxt">Из: scripts/JennyPlayer ➔ В: Download/..._for_AI.txt</span>
+      </button>
+      <label style="display:flex;align-items:center;gap:8px;font-size:11px;color:#c9d1d9;cursor:pointer;user-select:none;margin-top:-2px;">
+        <input type="checkbox" id="chkTxtNumbered" onchange="try{localStorage.setItem('jb_txt_numbered', this.checked ? '1' : '0');}catch(e){}" style="width:16px;height:16px;accent-color:#39c5cf;flex-shrink:0;">
+        <span>с номерами строк (<span style="color:#8b949e;">ИИ точнее указывает место, но файл больше и код не скопировать «как есть»</span>)</span>
+      </label>
     </div>
   </div>
 
@@ -1058,6 +1099,9 @@ function updateButtonLabels() {
   document.getElementById('subDlGoodZip').textContent =
     'Откуда: ' + ghGoodDesc + ' ➔ В папку: ' + saveP;
 
+  const subTxt = document.getElementById('subExportTxt');
+  if (subTxt) subTxt.textContent = 'Из: ' + srcP + ' ➔ В файл: ' + saveP + '/' + projBase + '_for_AI.txt';
+
   if (latestGoodBuildInfo && latestGoodBuildInfo.run_number) {
     document.getElementById('mainPullFolder').textContent =
       '⬇️ ИМПОРТ: Скачать Сборку #' + latestGoodBuildInfo.run_number + ' с GitHub в рабочую папку';
@@ -1300,6 +1344,7 @@ function applyConfigToUi(c) {
   document.getElementById('sourceFolderInput').value = c.source_dir || '/storage/emulated/0/scripts/JennyPlayer';
   currentBrowseDir = c.browse_dir || c.save_dir || '/storage/emulated/0/Download';
   updateButtonLabels();
+  if (typeof renderRepoTemplates === 'function') renderRepoTemplates();
 }
 
 async function initApp() {
@@ -1315,7 +1360,8 @@ async function initApp() {
   refreshInstalledVersion();
 }
 
-async function saveSettings() {
+async function saveSettings(opts) {
+  opts = (opts && typeof opts === 'object' && !opts.target) ? opts : {};
   const repo = document.getElementById('cfgRepo').value.trim();
   const token = document.getElementById('cfgToken').value.trim();
   const save_dir = document.getElementById('saveDirInput').value.trim();
@@ -1329,14 +1375,269 @@ async function saveSettings() {
     const d = await r.json();
     if (d.status === 'ok') {
       applyConfigToUi(d.config);
-      document.getElementById('settingsArea').style.display = 'none';
-      showStatus('✅ Настройки сохранены во внутренней памяти приложения!', false);
+      if (typeof rememberRepoFolder === 'function') rememberRepoFolder(d.config.repo, d.config.source_dir);
+      if (!opts.keepOpen) document.getElementById('settingsArea').style.display = 'none';
+      if (!opts.quiet) showStatus('✅ Настройки сохранены во внутренней памяти приложения!', false);
       loadRuns();
+      return true;
     }
   } catch (e) {
     showStatus('❌ Ошибка сохранения настроек: ' + e, true);
   }
+  return false;
 }
+
+// ==============================================================================
+// V1.9: ШАБЛОНЫ РЕПОЗИТОРИЕВ (тап = репо в строку + сохранение + одноимённая рабочая папка)
+// ==============================================================================
+const DEFAULT_REPO_TEMPLATES = ['hgg543470-bot/JennyPlayer', 'hgg543470-bot/JennyBuilder'];
+const DEFAULT_SCRIPTS_PARENT = '/storage/emulated/0/scripts';
+let repoTplDeleteMode = false;
+
+function lsGetJson(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) {
+      const v = JSON.parse(raw);
+      if (v && typeof v === 'object') return v;
+    }
+  } catch (e) {}
+  return fallback;
+}
+
+function lsSetJson(key, val) {
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) {}
+}
+
+function getRepoTemplates() {
+  let list = lsGetJson('jb_repo_templates', null);
+  if (!Array.isArray(list) || list.length === 0) list = DEFAULT_REPO_TEMPLATES.slice();
+  return list.filter(s => typeof s === 'string' && s.indexOf('/') > 0);
+}
+
+function getRepoFolderMap() {
+  const m = lsGetJson('jb_repo_folder_map', {});
+  return Array.isArray(m) ? {} : m;
+}
+
+function rememberRepoFolder(repo, folder) {
+  if (!repo || !folder) return;
+  const m = getRepoFolderMap();
+  m[repo] = folder;
+  lsSetJson('jb_repo_folder_map', m);
+}
+
+function renderRepoTemplates() {
+  const bar = document.getElementById('repoTplBar');
+  if (!bar) return;
+  const cur = (document.getElementById('cfgRepo').value || '').trim();
+  const list = getRepoTemplates();
+  bar.innerHTML = '';
+  list.forEach(repo => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'repo-chip' + (repoTplDeleteMode ? ' del' : (repo === cur ? ' active' : ''));
+    b.textContent = (repoTplDeleteMode ? '✕ ' : '') + repo.split('/').pop();
+    b.title = repo;
+    b.addEventListener('click', () => applyRepoTemplate(repo));
+    bar.appendChild(b);
+  });
+  const del = document.getElementById('btnRepoTplDel');
+  if (del) del.textContent = repoTplDeleteMode ? '✅ Готово (выйти из удаления)' : '🗑 Удалить шаблон';
+}
+
+function addRepoTemplate() {
+  const cur = (document.getElementById('cfgRepo').value || '').trim();
+  if (!cur || cur.indexOf('/') < 1 || /\s/.test(cur)) {
+    showStatus('⚠️ Сначала впиши репозиторий в формате владелец/название, например hgg543470-bot/JennyPlayer', true);
+    return;
+  }
+  const list = getRepoTemplates();
+  if (list.indexOf(cur) !== -1) {
+    showStatus('ℹ️ Такой шаблон уже есть: ' + cur, false);
+    return;
+  }
+  list.push(cur);
+  lsSetJson('jb_repo_templates', list);
+  renderRepoTemplates();
+  showStatus('✅ Шаблон добавлен: ' + cur, false);
+}
+
+function toggleRepoTplDelete() {
+  repoTplDeleteMode = !repoTplDeleteMode;
+  renderRepoTemplates();
+  showStatus(repoTplDeleteMode ? '🗑 Режим удаления: тапни по шаблону, чтобы убрать его из списка' : '✅ Режим удаления выключен', false);
+}
+
+async function applyRepoTemplate(repo) {
+  if (repoTplDeleteMode) {
+    const list = getRepoTemplates().filter(s => s !== repo);
+    lsSetJson('jb_repo_templates', list);
+    renderRepoTemplates();
+    showStatus('🗑 Шаблон удалён: ' + repo, false);
+    return;
+  }
+  const repoInp = document.getElementById('cfgRepo');
+  const srcInp = document.getElementById('sourceFolderInput');
+  const oldRepo = (repoInp.value || '').trim();
+  const oldFolder = (srcInp.value || '').trim();
+  if (oldRepo === repo) {
+    showStatus('ℹ️ Этот репозиторий уже выбран: ' + repo, false);
+    return;
+  }
+
+  // Запоминаем папку старого репозитория, чтобы при возврате она восстановилась
+  const map = getRepoFolderMap();
+  if (oldRepo && oldFolder) map[oldRepo] = oldFolder;
+
+  // Одноимённая рабочая папка рядом с текущей: .../scripts/<ИмяРепозитория>
+  const name = repo.split('/').pop();
+  const parentDir = (oldFolder.replace(/\/+$/, '').split('/').slice(0, -1).join('/')) || DEFAULT_SCRIPTS_PARENT;
+  const folder = map[repo] || (parentDir + '/' + name);
+  map[repo] = folder;
+  lsSetJson('jb_repo_folder_map', map);
+
+  repoInp.value = repo;
+  srcInp.value = folder;
+
+  // Сбрасываем всё, что относилось к прошлому репозиторию (список сборок, выбранные источники сравнения)
+  allLoadedRuns = [];
+  latestGoodBuildInfo = null;
+  selectedRunId = '';
+  lastFailedJobId = null;
+  compareBaseSpec = 'INSTALLED_NOW';
+  compareTargetSpec = 'LOCAL_FOLDER';
+  try { localStorage.removeItem('jb_runs_cache_v18'); } catch (e) {}
+  const listEl = document.getElementById('runsListContainer');
+  if (listEl) listEl.textContent = '⏳ Загрузка сборок...';
+  const stBox = document.getElementById('activeStepsContainer');
+  if (stBox) stBox.innerHTML = '';
+
+  const ok = await saveSettings({keepOpen: true, quiet: true});
+  if (ok) {
+    showStatus('✅ Репозиторий: ' + repo + '\n• Рабочая папка: ' + folder, false);
+  }
+  renderRepoTemplates();
+}
+
+// ==============================================================================
+// V1.9: ВЕСЬ ПРОЕКТ В 1 .TXT ДЛЯ ИИ  И  ТОЛЬКО ИЗМЕНЁННЫЕ ФАЙЛЫ ЦЕЛИКОМ
+// ==============================================================================
+function isTxtNumbered() {
+  const c = document.getElementById('chkTxtNumbered');
+  return Boolean(c && c.checked);
+}
+
+async function exportProjectTxt() {
+  if (!checkAndroidStorageState()) {
+    requestAndroidStoragePerm();
+    return;
+  }
+  const fp = document.getElementById('sourceFolderInput').value.trim();
+  const sd = document.getElementById('saveDirInput').value.trim();
+  showStatus('⏳ Собираю весь проект из ' + fp + ' в один .txt...', false);
+  startProgressPolling('📝 Экспорт проекта в .txt', 'Сбор файлов проекта...', false);
+  try {
+    const r = await fetch('/api/export_project_txt', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({folder_path: fp, save_dir: sd, numbered: isTxtNumbered()})
+    });
+    const d = await r.json();
+    stopProgressPolling();
+    if (d.status === 'ok') {
+      showStatus(
+        '✅ Проект собран в один текстовый файл для ИИ!\n' +
+        '• Файл: ' + d.txt_path + ' (' + d.size_kb + ' КБ)\n' +
+        '• Файлов: ' + d.files_count + ' | строк: ' + d.lines_count +
+        (d.skipped_count ? ' | пропущено бинарных/больших: ' + d.skipped_count : ''),
+        false
+      );
+    } else {
+      showStatus('❌ Ошибка экспорта: ' + d.error, true);
+    }
+  } catch (e) {
+    stopProgressPolling();
+    showStatus('❌ Ошибка: ' + e, true);
+  }
+}
+
+async function exportChangedFiles(fmt) {
+  const aInfo = resolveEffectiveCompareSpec(compareBaseSpec);
+  const bInfo = resolveEffectiveCompareSpec(compareTargetSpec);
+  const fp = document.getElementById('sourceFolderInput').value.trim();
+  const zp = document.getElementById('selectedZipPath').value.trim();
+  const sd = document.getElementById('saveDirInput').value.trim();
+
+  if (!checkAndroidStorageState()) {
+    requestAndroidStoragePerm();
+    return;
+  }
+  if ((aInfo.apiSpec === 'LOCAL_ZIP' || bInfo.apiSpec === 'LOCAL_ZIP') && !zp) {
+    showStatus('⚠️ Для сравнения с .zip сначала выбери файл архива через кнопку «📂 Выбрать .zip»', true);
+    return;
+  }
+  showStatus('⏳ Ищу изменённые файлы: «' + aInfo.label + '» ➔ «' + bInfo.label + '»...', false);
+  startProgressPolling('🔬 Изменённые файлы', 'Сверка деревьев файлов...', false);
+  try {
+    const r = await fetch('/api/export_changed', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        base_spec: aInfo.apiSpec, target_spec: bInfo.apiSpec,
+        base_label: aInfo.label, target_label: bInfo.label,
+        folder_path: fp, zip_path: zp, save_dir: sd,
+        fmt: fmt, numbered: isTxtNumbered()
+      })
+    });
+    const d = await r.json();
+    stopProgressPolling();
+    if (d.status !== 'ok') {
+      showStatus('❌ Ошибка: ' + d.error, true);
+      return;
+    }
+    if (!d.has_changes) {
+      showStatus(
+        'ℹ️ Новых и изменённых файлов нет — нечего сохранять.' +
+        (d.removed_count ? '\n• Удалено в Б: ' + d.removed_count + ' (' + (d.removed || []).slice(0, 5).join(', ') + ')' : ''),
+        false
+      );
+      return;
+    }
+    showStatus(
+      '✅ Изменённые файлы сохранены ЦЕЛИКОМ (' + (fmt === 'txt' ? '1 .txt' : '.zip') + ')!\n' +
+      '• Файл: ' + d.out_path + ' (' + d.size_kb + ' КБ)\n' +
+      '• Новых: ' + d.added_count + ' | изменённых: ' + d.modified_count +
+      (d.removed_count ? ' | удалено в Б (в файл не входят): ' + d.removed_count : ''),
+      false
+    );
+  } catch (e) {
+    stopProgressPolling();
+    showStatus('❌ Ошибка: ' + e, true);
+  }
+}
+
+// ==============================================================================
+// V1.9: ФИКС КЛАВИАТУРЫ — первый тап по текстовому полю должен сразу давать фокус
+// ==============================================================================
+(function installInputFocusFixV19() {
+  const isTextInput = (el) => el && el.tagName === 'INPUT' && (el.type === 'text' || el.type === 'password' || el.type === 'search');
+  document.addEventListener('touchend', (e) => {
+    const el = e.target;
+    if (!isTextInput(el)) return;
+    requestAnimationFrame(() => {
+      try { if (document.activeElement !== el) el.focus(); } catch (err) {}
+    });
+  }, {passive: true});
+})();
+
+(function initV19UiExtras() {
+  try {
+    const c = document.getElementById('chkTxtNumbered');
+    if (c) c.checked = (localStorage.getItem('jb_txt_numbered') === '1');
+  } catch (e) {}
+  renderRepoTemplates();
+})();
 
 async function pushSelectedZipPath() {
   const zp = document.getElementById('selectedZipPath').value.trim();
@@ -1752,19 +2053,22 @@ function renderRunsPayloadToDom(d) {
     const isInstalledNow = (instPlayerBuild && item.run_number === instPlayerBuild);
     const borderCol = isInstalledNow ? '#3fb950' : (isSel ? '#a371f7' : '#21262d');
     const instBadgeHtml = isInstalledNow ? '<span class="inst-badge">📲 УСТАНОВЛЕНА СЕЙЧАС</span>' : '';
+    // Версия APK = то, что штампуется в versionName: «#НОМЕР (сообщение коммита)»
+    const verTitle = String(item.title || '').replace(/[<>]/g, '');
     html += '<div class="run-item" style="border-color:' + borderCol + ';" onclick="selectRun(' + item.id + ')">';
-    html += '  <div style="flex:1;min-width:0;">';
-    html += '    <div style="font-weight:bold;color:' + color + ';font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + icon + ' Сборка #' + item.run_number + instBadgeHtml + ' — ' + item.title + '</div>';
+    html += '  <div style="min-width:0;">';
+    html += '    <div style="font-weight:bold;color:' + color + ';font-size:12.5px;">' + icon + ' Сборка #' + item.run_number + instBadgeHtml + '</div>';
+    html += '    <div class="run-ver">🏷 <b>Версия #' + item.run_number + '</b>' + (verTitle ? ' — ' + verTitle : '') + '</div>';
     html += '    <div style="font-size:10px;color:#8b949e;">Дата: ' + item.created_at + ' • ID коммита: ' + item.head_sha + '</div>';
     html += '  </div>';
     if (item.conclusion === 'success') {
-      html += '  <div style="display:flex;gap:4px;flex-shrink:0;">';
+      html += '  <div class="run-btns">';
       html += '    <button class="btn btn-purple" style="width:auto;padding:6px 7px;font-size:10.5px;" onclick="event.stopPropagation();downloadBuildSourceZip(' + item.run_number + ', this)">📦 .zip</button>';
       html += '    <button class="btn btn-blue" style="width:auto;padding:6px 8px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', false)">📥 APK</button>';
       html += '    <button class="btn btn-green" style="width:auto;padding:6px 8px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', true)">📲 Установить</button>';
       html += '  </div>';
     } else if (item.conclusion === 'failure') {
-      html += '  <div style="display:flex;gap:4px;flex-shrink:0;">';
+      html += '  <div class="run-btns">';
       html += '    <button class="btn btn-purple" style="width:auto;padding:6px 7px;font-size:10.5px;" onclick="event.stopPropagation();downloadBuildSourceZip(' + item.run_number + ', this)">📦 .zip</button>';
       html += '    <button class="btn btn-red" style="width:auto;padding:6px 9px;font-size:10.5px;white-space:nowrap;" onclick="event.stopPropagation();selectRun(' + item.id + ')">🔍 Ошибка #' + item.run_number + '</button>';
       html += '  </div>';

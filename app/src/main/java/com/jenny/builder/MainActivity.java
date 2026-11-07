@@ -204,9 +204,25 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    // V1.9: гарантируем, что WebView принимает фокус и ввод с клавиатуры
+    private void ensureWebViewFocusV19() {
+        try {
+            if (webView == null) return;
+            webView.setFocusable(true);
+            webView.setFocusableInTouchMode(true);
+            if (!webView.hasFocus()) {
+                webView.requestFocus(View.FOCUS_DOWN);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
+        if (hasFocus && !isDesktopOverlayActiveV132) {
+            ensureWebViewFocusV19();
+        }
         if (hasFocus && isDesktopOverlayActiveV132) {
             if (android.os.SystemClock.uptimeMillis() < overlayGrantProtectionUntilMsV153) {
                 moveTaskToBack(true);
@@ -1002,10 +1018,19 @@ public class MainActivity extends AppCompatActivity {
             public void onWindowVisibilityChanged(int visibility) {
                 super.onWindowVisibilityChanged(View.VISIBLE);
             }
+
+            // V1.9: WebView создан с контекстом приложения, поэтому система не всегда считает его
+            // текстовым редактором и клавиатура не показывается с первого тапа по полю.
+            @Override
+            public boolean onCheckIsTextEditor() {
+                return true;
+            }
         };
         webView.setScaleX(1.0f);
                         webView.setScaleY(1.0f);
                         setContentView(webView);
+
+        ensureWebViewFocusV19();
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);

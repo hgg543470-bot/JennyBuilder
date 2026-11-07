@@ -1767,6 +1767,242 @@ def extract_failed_step_log(raw_log_text: str, step_name: str, started_at: str =
     return header + "\n".join(lines[start_idx:end_idx])
 
 
+# ==============================================================================
+# V1.9: ЭКСПОРТ ВСЕГО ПРОЕКТА В 1 .TXT (ДЛЯ ИИ) И ЭКСПОРТ ТОЛЬКО ИЗМЕНЁННЫХ ФАЙЛОВ
+# ==============================================================================
+TEXT_EXPORT_MAX_FILE_BYTES = 1500000
+BINARY_EXTS = {
+    ".so", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".apk", ".aab", ".dex",
+    ".zip", ".jar", ".gz", ".7z", ".rar", ".tar", ".mp3", ".flac", ".ogg", ".opus", ".m4a",
+    ".wav", ".mp4", ".mkv", ".webm", ".ttf", ".otf", ".woff", ".woff2", ".bin", ".xflac",
+    ".class", ".a", ".o", ".torrent", ".db", ".sqlite",
+}
+
+
+def _is_probably_text(rel_path: str, data: bytes) -> bool:
+    ext = os.path.splitext(rel_path)[1].lower()
+    if ext in BINARY_EXTS:
+        return False
+    return b"\x00" not in data[:4096]
+
+
+def _short_src_tag(lbl: str, fallback: str) -> str:
+    m_b = re.search(r"#(\d+)", lbl or "")
+    if m_b:
+        return f"b{m_b.group(1)}"
+    if "Рабочая папка" in (lbl or "") or "LOCAL_FOLDER" in (lbl or ""):
+        return "folder"
+    if ".zip" in (lbl or "").lower():
+        return "zip"
+    m_id = re.search(r"ID:\s*([0-9a-f]{5,10})", lbl or "", re.I)
+    if m_id:
+        return m_id.group(1)[:7]
+    return fallback
+
+
+def _build_text_bundle(file_map: dict, title: str, numbered: bool = False, extra_header=None) -> tuple:
+    """
+    Склеивает файлы в один текст:  шапка + дерево + блоки «FILE: путь (LINES: N)».
+    Бинарные и слишком большие файлы не включаются, но перечисляются в шапке.
+    Возвращает (text, included_count, skipped_list, total_lines).
+    """
+    included = []
+    skipped = []
+    for rel in sorted(file_map.keys()):
+        data = file_map[rel]
+        if len(data) > TEXT_EXPORT_MAX_FILE_BYTES:
+            skipped.append((rel, len(data), "слишком большой"))
+        elif not _is_probably_text(rel, data):
+            skipped.append((rel, len(data), "бинарный"))
+        else:
+            included.append(rel)
+
+    bodies = []
+    total_lines = 0
+    tree_lines = []
+    for rel in included:
+        text = file_map[rel].decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+        lines = text.split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()
+        total_lines += len(lines)
+        tree_lines.append(f"  {rel} ({len(lines)} строк)")
+        head = "=" * 80
+        block = [head, f"FILE: {rel} (LINES: {len(lines)})", head]
+        if numbered:
+            block.extend(f"{i}: {ln}" for i, ln in enumerate(lines, 1))
+        else:
+            block.extend(lines)
+        block.append("")
+        bodies.append("\n".join(block))
+
+    out = [f"=== {title} ==="]
+    out.append("Создано: " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + " (Jenny Builder)")
+    out.append(
+        f"Файлов в дампе: {len(included)} | строк: {total_lines} | "
+        f"пропущено (бинарные/большие): {len(skipped)} | "
+        f"{'с номерами строк' if numbered else 'без номеров строк (чистый код)'}"
+    )
+    if extra_header:
+        out.append("")
+        out.extend(extra_header)
+    out.append("")
+    out.append("СТРУКТУРА ФАЙЛОВ:")
+    out.extend(tree_lines)
+    if skipped:
+        out.append("")
+        out.append("ПРОПУЩЕНО (содержимое не включено):")
+        for rel, sz, why in skipped:
+            out.append(f"  {rel} — {why}, {round(sz / 1024.0, 1)} КБ")
+    out.append("")
+    return "\n".join(out) + "\n" + "\n".join(bodies), len(included), skipped, total_lines
+
+
+def export_project_to_txt(folder_path: str, save_dir: str, numbered: bool = False) -> dict:
+    if not os.path.isdir(folder_path):
+        raise ValueError(
+            f"Папка не найдена или нет доступа: {folder_path}. Нажми «🔓 Выдать Доступ ко всем файлам»!"
+        )
+    set_progress(True, 10, "📝 Экспорт проекта в .txt", f"Сбор файлов из {folder_path}...")
+    fmap = _collect_files_from_folder(folder_path)
+    if not fmap:
+        set_progress(False, 0)
+        raise ValueError(
+            "Android скрыл файлы в этой папке (0 файлов). Нажми «🔓 Выдать Доступ ко всем файлам» вверху экрана и повтори!"
+        )
+    proj = os.path.basename(folder_path.rstrip("/")) or "Project"
+    set_progress(True, 50, "📝 Экспорт проекта в .txt", f"Склейка {len(fmap)} файлов в один текст...")
+    text, inc_cnt, skipped, total_lines = _build_text_bundle(
+        fmap, f"{proj.upper()} FULL SOURCE DUMP", numbered=numbered
+    )
+    os.makedirs(save_dir, exist_ok=True)
+    out_path = os.path.join(save_dir, f"{proj}_for_AI.txt")
+    raw = text.encode("utf-8")
+    with open(out_path, "wb") as f:
+        f.write(raw)
+    set_progress(False, 100, "Готово", "Проект сохранён в один .txt")
+    return {
+        "status": "ok",
+        "txt_path": out_path,
+        "filename": os.path.basename(out_path),
+        "files_count": inc_cnt,
+        "skipped_count": len(skipped),
+        "lines_count": total_lines,
+        "size_kb": round(len(raw) / 1024.0, 1),
+    }
+
+
+def _fetch_blob_bytes_strict(blob_sha: str, token: str = "", repo: str = "") -> bytes:
+    """Как _fetch_blob_bytes, но с повторами и ошибкой вместо тихой пустоты."""
+    if not blob_sha:
+        return b""
+    last_err = None
+    for attempt in range(3):
+        try:
+            blob_obj = gh_api(f"git/blobs/{blob_sha}", "GET", token=token, repo=repo)
+            b64_content = (blob_obj.get("content") or "").replace("\n", "").replace("\r", "")
+            return base64.b64decode(b64_content) if b64_content else b""
+        except Exception as e:
+            last_err = e
+            time.sleep(0.6 * (attempt + 1))
+    raise RuntimeError(f"Не удалось скачать файл с GitHub (blob {blob_sha[:7]}): {last_err}")
+
+
+def export_changed_files(base_spec: str, target_spec: str, base_lbl: str = "", target_lbl: str = "",
+                         folder_path: str = "", zip_path: str = "", save_dir: str = "",
+                         fmt: str = "zip", numbered: bool = False) -> dict:
+    """
+    Берёт ИЗМЕНЁННЫЕ и НОВЫЕ файлы Источника Б относительно Источника А
+    и сохраняет их ЦЕЛИКОМ: либо в .zip (с той же структурой папок, можно накладывать на проект),
+    либо в один .txt для отправки ИИ. Удалённые файлы только перечисляются.
+    """
+    cfg = load_config()
+    rep = (cfg.get("repo") or DEFAULT_REPO).strip()
+    save_dir = (save_dir or cfg.get("save_dir") or DEFAULT_SAVE_DIR).strip()
+
+    set_progress(True, 8, "🔬 Изменённые файлы", "Загрузка структуры Источника А (База)...")
+    side_a = _load_Compare_Side(base_spec, folder_path, zip_path, repo=rep)
+    set_progress(True, 20, "🔬 Изменённые файлы", "Загрузка структуры Источника Б (Цель)...")
+    side_b = _load_Compare_Side(target_spec, folder_path, zip_path, repo=rep)
+
+    lbl_a = base_lbl or side_a["label"]
+    lbl_b = target_lbl or side_b["label"]
+    map_a, map_b = side_a["sha_map"], side_b["sha_map"]
+
+    added = sorted(p for p in map_b if p not in map_a)
+    modified = sorted(p for p in map_b if p in map_a and map_a[p] != map_b[p])
+    removed = sorted(p for p in map_a if p not in map_b)
+    to_export = sorted(added + modified)
+
+    if not to_export:
+        set_progress(False, 100, "Готово", "Изменённых файлов нет")
+        return {
+            "status": "ok", "has_changes": False, "files_count": 0,
+            "added_count": 0, "modified_count": 0, "removed_count": len(removed),
+            "removed": removed,
+        }
+
+    file_bytes = {}
+    for idx, rel in enumerate(to_export, 1):
+        set_progress(True, 25 + int((idx * 65) / max(1, len(to_export))), "🔬 Изменённые файлы",
+                     f"Получение файла {idx} из {len(to_export)}: {rel}")
+        if side_b["bytes_map"] is not None:
+            file_bytes[rel] = side_b["bytes_map"].get(rel, b"")
+        else:
+            file_bytes[rel] = _fetch_blob_bytes_strict(map_b.get(rel, ""), repo=rep)
+
+    proj = os.path.basename((folder_path or cfg.get("source_dir") or DEFAULT_PROJECT_DIR).rstrip("/")) or "Project"
+    tag_a = _short_src_tag(lbl_a, "A")
+    tag_b = _short_src_tag(lbl_b, "B")
+    ts = datetime.datetime.now().strftime("%H%M%S")
+    base_name = f"{proj}_changed_{tag_a}_to_{tag_b}_{ts}"
+    os.makedirs(save_dir, exist_ok=True)
+
+    manifest = [f"А (было):  {lbl_a}", f"Б (стало): {lbl_b}",
+                f"Новых: {len(added)} | изменённых: {len(modified)} | удалено в Б: {len(removed)}"]
+    for p in added:
+        manifest.append(f"  + НОВЫЙ     {p}")
+    for p in modified:
+        manifest.append(f"  ~ ИЗМЕНЁН   {p}")
+    for p in removed:
+        manifest.append(f"  - УДАЛЁН    {p}  (в архив/дамп не входит — удали у себя вручную)")
+
+    set_progress(True, 94, "🔬 Изменённые файлы", "Запись результата...")
+    if fmt == "txt":
+        text, inc_cnt, skipped, total_lines = _build_text_bundle(
+            file_bytes, f"{proj.upper()} — ТОЛЬКО ИЗМЕНЁННЫЕ ФАЙЛЫ (ЦЕЛИКОМ)", numbered=numbered, extra_header=manifest
+        )
+        out_path = os.path.join(save_dir, base_name + ".txt")
+        raw = text.encode("utf-8")
+        with open(out_path, "wb") as f:
+            f.write(raw)
+        size_kb = round(len(raw) / 1024.0, 1)
+    else:
+        out_path = os.path.join(save_dir, base_name + ".zip")
+        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for rel in to_export:
+                zf.writestr(rel, file_bytes[rel])
+            # Список изменений кладём в комментарий архива, а не файлом, чтобы
+            # он не попал в проект при распаковке «поверх» и не улетел на GitHub.
+            zf.comment = "\n".join(manifest).encode("utf-8")[:65000]
+        size_kb = round(os.path.getsize(out_path) / 1024.0, 1)
+
+    set_progress(False, 100, "Готово", "Изменённые файлы сохранены")
+    return {
+        "status": "ok",
+        "has_changes": True,
+        "fmt": fmt,
+        "out_path": out_path,
+        "filename": os.path.basename(out_path),
+        "files_count": len(to_export),
+        "added_count": len(added),
+        "modified_count": len(modified),
+        "removed_count": len(removed),
+        "removed": removed,
+        "size_kb": size_kb,
+    }
+
+
 class BuilderHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
@@ -2112,6 +2348,27 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     zip_path=zip_p,
                 )
                 return self._send_json({"status": "ok", **res})
+
+            if path == "/api/export_project_txt":
+                cfg = load_config()
+                folder_p = (data.get("folder_path") or cfg.get("source_dir") or DEFAULT_PROJECT_DIR).strip()
+                save_dir = (data.get("save_dir") or cfg.get("save_dir") or DEFAULT_SAVE_DIR).strip()
+                res = export_project_to_txt(folder_p, save_dir, numbered=bool(data.get("numbered", False)))
+                return self._send_json(res)
+
+            if path == "/api/export_changed":
+                res = export_changed_files(
+                    base_spec=(data.get("base_spec") or "LOCAL_FOLDER").strip(),
+                    target_spec=(data.get("target_spec") or "LOCAL_FOLDER").strip(),
+                    base_lbl=(data.get("base_label") or "").strip(),
+                    target_lbl=(data.get("target_label") or "").strip(),
+                    folder_path=(data.get("folder_path") or "").strip(),
+                    zip_path=(data.get("zip_path") or "").strip(),
+                    save_dir=(data.get("save_dir") or "").strip(),
+                    fmt=("txt" if (data.get("fmt") == "txt") else "zip"),
+                    numbered=bool(data.get("numbered", False)),
+                )
+                return self._send_json(res)
 
             if path == "/api/fs/mkdir":
                 parent = (data.get("parent") or DEFAULT_SAVE_DIR).strip()
