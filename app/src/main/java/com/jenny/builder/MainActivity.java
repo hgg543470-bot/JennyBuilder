@@ -50,6 +50,7 @@ public class MainActivity extends AppCompatActivity {
     private static int uninstallWatchTicksV170 = 0;
     private static MainActivity instance;
     private static WebView webView;
+    private static volatile boolean allowKeyboardEditV22 = false;
     private static boolean isPageLoaded = false;
     private static String pendingTorrentPayload = null;
     private static String pendingTorrentName = null;
@@ -204,10 +205,49 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    // V1.9: гарантируем, что WebView принимает фокус и ввод с клавиатуры
+    private void applyKeyboardLockStateV22(final boolean allow) {
+        allowKeyboardEditV22 = allow;
+        runOnUiThread(() -> {
+            try {
+                android.view.inputmethod.InputMethodManager imm =
+                    (android.view.inputmethod.InputMethodManager) getSystemService(android.content.Context.INPUT_METHOD_SERVICE);
+                if (!allow) {
+                    if (imm != null && webView != null) {
+                        imm.hideSoftInputFromWindow(webView.getWindowToken(), 0);
+                        imm.restartInput(webView);
+                    }
+                } else if (webView != null) {
+                    webView.setFocusable(true);
+                    webView.setFocusableInTouchMode(true);
+                    webView.requestFocus();
+                    if (imm != null) {
+                        imm.restartInput(webView);
+                        imm.showSoftInput(webView, 0);
+                    }
+                    webView.postDelayed(() -> {
+                        try {
+                            if (allowKeyboardEditV22 && imm != null && webView != null) {
+                                imm.showSoftInput(webView, 0);
+                            }
+                        } catch (Exception ignored) {}
+                    }, 65);
+                }
+            } catch (Exception ignored) {}
+        });
+    }
+
+    // V2.2: клавиатура строго заблокирована на главной, пока не включен двойной тап
     private void ensureWebViewFocusV19() {
         try {
             if (webView == null) return;
+            if (!allowKeyboardEditV22) {
+                android.view.inputmethod.InputMethodManager imm =
+                    (android.view.inputmethod.InputMethodManager) getSystemService(android.content.Context.INPUT_METHOD_SERVICE);
+                if (imm != null) {
+                    imm.hideSoftInputFromWindow(webView.getWindowToken(), 0);
+                }
+                return;
+            }
             webView.setFocusable(true);
             webView.setFocusableInTouchMode(true);
             if (!webView.hasFocus()) {
@@ -1023,7 +1063,7 @@ public class MainActivity extends AppCompatActivity {
             // текстовым редактором и клавиатура не показывается с первого тапа по полю.
             @Override
             public boolean onCheckIsTextEditor() {
-                return true;
+                return allowKeyboardEditV22;
             }
         };
         webView.setScaleX(1.0f);
@@ -1073,6 +1113,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public class WebAppInterface {
+        @JavascriptInterface
+        public void setKeyboardAllowed(final boolean allowed) {
+            applyKeyboardLockStateV22(allowed);
+        }
                 @JavascriptInterface
         public void setVideoFullscreenLock(boolean fullscreen, boolean locked) {
             isVideoFullscreenV132 = fullscreen;
@@ -1118,6 +1162,7 @@ public class MainActivity extends AppCompatActivity {
                 obj.put("apkPath", apkPath);
                 obj.put("fileName", f.getName());
                 obj.put("sizeMb", Math.round((f.length() / (1024.0 * 1024.0)) * 100.0) / 100.0);
+                obj.put("apkLastModified", f.lastModified());
                 obj.put("package", pkg);
                 obj.put("appName", appName);
                 obj.put("apkVersionName", apkVerName);
@@ -1135,6 +1180,8 @@ public class MainActivity extends AppCompatActivity {
                     obj.put("installedVersionName", instVerName);
                     obj.put("installedVersionCode", instVerCode);
                     obj.put("installedSignature", instSig);
+                    obj.put("installedLastUpdateTime", instInfo.lastUpdateTime);
+                    obj.put("installedFirstInstallTime", instInfo.firstInstallTime);
                     boolean sigMismatch = (!apkSig.isEmpty() && !instSig.isEmpty() && !apkSig.equals(instSig));
                     boolean isDowngrade = (apkVerCode < instVerCode);
                     obj.put("signatureMismatch", sigMismatch);
@@ -1597,6 +1644,27 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (pendingUninstallPkgV170 != null && !pendingUninstallPkgV170.isEmpty()) {
+            boolean stillHere = true;
+            try {
+                getPackageManager().getPackageInfo(pendingUninstallPkgV170, 0);
+            } catch (PackageManager.NameNotFoundException nf) {
+                stillHere = false;
+            } catch (Exception ignored) {}
+            if (!stillHere) {
+                if (uninstallWatchRunnableV170 != null) {
+                    permWatchHandlerV147.removeCallbacks(uninstallWatchRunnableV170);
+                    uninstallWatchRunnableV170 = null;
+                }
+                pendingUninstallPkgV170 = null;
+                final String nextApk = pendingInstallApkPathV170;
+                pendingInstallApkPathV170 = null;
+                evalJs("if(window.onUninstallCompletedV170) window.onUninstallCompletedV170();");
+                if (nextApk != null && !nextApk.isEmpty()) {
+                    permWatchHandlerV147.postDelayed(() -> launchApkInstallerIntentV170(nextApk), 250);
+                }
+            }
+        }
         boolean granted = (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) || Settings.canDrawOverlays(this);
 
         if (waitingForPermScreenV148 && !subSettingsLaunchedV154 && !granted && isVideoActiveV132) {

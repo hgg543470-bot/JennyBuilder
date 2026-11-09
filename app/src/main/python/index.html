@@ -216,6 +216,19 @@
   }
   .mt-lbl { color: #8b949e; }
   .mt-val { color: #e6edf3; font-weight: 600; text-align: right; word-break: break-all; max-width: 65%; }
+  .btn-disabled-build {
+    background: #1b2028 !important;
+    border-color: #30363d !important;
+    color: #6e7681 !important;
+    opacity: 0.52;
+    cursor: not-allowed !important;
+    pointer-events: none !important;
+  }
+  input.dbltap-unlocked {
+    border-color: #58a6ff !important;
+    box-shadow: 0 0 0 2px rgba(88,166,255,0.28) !important;
+    background: #0d1520 !important;
+  }
 </style>
 </head>
 <body>
@@ -269,7 +282,7 @@
 
 <div class="card" id="topHeaderCard">
   <div class="card-title">
-    <span>🛠️ JENNY BUILDER v2.1 (DOCTOR)</span>
+    <span>🛠️ JENNY BUILDER v2.2 (DOCTOR)</span>
     <button class="btn" style="width:auto;padding:4px 8px;font-size:11px;" onclick="toggleSettings()">⚙️ Настройки</button>
   </div>
   <div id="settingsArea" style="display:none;margin-top:6px;border-top:1px solid #30363d;padding-top:8px;">
@@ -548,6 +561,7 @@
       <button class="btn" style="width:auto;padding:3px 8px;" onclick="closeMtInstaller()">✕</button>
     </div>
 
+    <div id="mtStartupNoticeBox" style="display:none;background:#102131;border:1px solid #58a6ff;border-radius:9px;padding:8px 10px;margin-bottom:8px;font-size:11px;color:#79c0ff;line-height:1.35;"></div>
     <div id="mtInfoRows" style="background:#090d13;padding:8px 10px;border-radius:8px;border:1px solid #30363d;margin-bottom:8px;"></div>
 
     <!-- Предупреждение о несовпадении подписей или понижении версии (как в MT Manager) -->
@@ -569,6 +583,11 @@
       </button>
       <button class="btn" onclick="closeMtInstaller()">
         Отмена
+      </button>
+    </div>
+    <div id="mtForceRedlWrap" style="display:none;margin-top:7px;">
+      <button class="btn" style="font-size:10.5px;padding:5px 8px;color:#8b949e;border-color:#30363d;" onclick="forceRedownloadCurrentMtApk()">
+        🔄 Перекачать этот APK с GitHub заново
       </button>
     </div>
   </div>
@@ -992,7 +1011,22 @@ function selectCompareOption(spec) {
 // УСТАНОВЩИК APK В СТИЛЕ MT MANAGER (С АВТО-УДАЛЕНИЕМ ПРИ КОНФЛИКТЕ ПОДПИСЕЙ)
 // ==============================================================================
 
-function openMtInstallerForApk(apkPath) {
+function openMtInstallerForApk(apkPath, startupNoticeText, runCtx) {
+  lockAllInputsV22(null);
+  if (runCtx) lastMtRunContextV22 = runCtx;
+  const noticeEl = document.getElementById('mtStartupNoticeBox');
+  if (noticeEl) {
+    if (startupNoticeText) {
+      noticeEl.textContent = startupNoticeText;
+      noticeEl.style.display = 'block';
+    } else {
+      noticeEl.style.display = 'none';
+    }
+  }
+  const redlWrap = document.getElementById('mtForceRedlWrap');
+  if (redlWrap) {
+    redlWrap.style.display = (lastMtRunContextV22 && lastMtRunContextV22.runId) ? 'block' : 'none';
+  }
   if (!apkPath) return;
   pendingMtApkPath = apkPath;
   const modal = document.getElementById('mtInstallModal');
@@ -1442,8 +1476,10 @@ async function initApp() {
       applyConfigToUi(d.config);
     }
   } catch (e) {}
+  lockAllInputsV22(null);
   await loadRuns();
-  refreshInstalledVersion();
+  await refreshInstalledVersion();
+  setTimeout(() => checkStartupPendingApkV22(false), 350);
 }
 
 async function saveSettings(opts) {
@@ -1602,6 +1638,7 @@ async function applyRepoTemplate(repo) {
   const ok = await saveSettings({keepOpen: true, quiet: true});
   if (ok) {
     showStatus('✅ Репозиторий: ' + repo + '\n• Рабочая папка: ' + folder, false);
+    setTimeout(() => checkStartupPendingApkV22(true), 600);
   }
   renderRepoTemplates();
 }
@@ -1704,17 +1741,105 @@ async function exportChangedFiles(fmt) {
 }
 
 // ==============================================================================
-// V1.9: ФИКС КЛАВИАТУРЫ — первый тап по текстовому полю должен сразу давать фокус
+// V2.2: СТРОГИЙ ЗАМОК КЛАВИАТУРЫ — ОТКРЫВАЕТСЯ ТОЛЬКО ПО ДВОЙНОМУ ТАПУ ПО СТРОКЕ
 // ==============================================================================
-(function installInputFocusFixV19() {
-  const isTextInput = (el) => el && el.tagName === 'INPUT' && (el.type === 'text' || el.type === 'password' || el.type === 'search');
+let activeUnlockedInputV22 = null;
+let lastInputTapTsV22 = 0;
+let lastInputTapElV22 = null;
+
+function isEditableTextFieldV22(el) {
+  if (!el) return false;
+  if (el.tagName === 'TEXTAREA') return true;
+  if (el.tagName === 'INPUT') {
+    const t = (el.type || 'text').toLowerCase();
+    return (t === 'text' || t === 'password' || t === 'search');
+  }
+  return false;
+}
+
+function lockAllInputsV22(exceptEl) {
+  const all = document.querySelectorAll('input, textarea');
+  for (let i = 0; i < all.length; i++) {
+    const inp = all[i];
+    if (!isEditableTextFieldV22(inp) || inp === exceptEl) continue;
+    inp.readOnly = true;
+    inp.classList.remove('dbltap-unlocked');
+  }
+  if (!exceptEl) {
+    activeUnlockedInputV22 = null;
+    try {
+      if (document.activeElement && isEditableTextFieldV22(document.activeElement)) {
+        document.activeElement.blur();
+      }
+    } catch (e) {}
+    try {
+      if (window.AndroidBridge && typeof window.AndroidBridge.setKeyboardAllowed === 'function') {
+        window.AndroidBridge.setKeyboardAllowed(false);
+      }
+    } catch (e) {}
+  }
+}
+
+function unlockInputByDoubleTapV22(el) {
+  if (!isEditableTextFieldV22(el)) return;
+  lockAllInputsV22(el);
+  activeUnlockedInputV22 = el;
+  el.readOnly = false;
+  el.classList.add('dbltap-unlocked');
+  try {
+    if (window.AndroidBridge && typeof window.AndroidBridge.setKeyboardAllowed === 'function') {
+      window.AndroidBridge.setKeyboardAllowed(true);
+    }
+  } catch (e) {}
+  try { el.focus(); } catch (e) {}
+  setTimeout(() => {
+    try {
+      if (activeUnlockedInputV22 === el) {
+        el.focus();
+        const len = (el.value || '').length;
+        if (typeof el.setSelectionRange === 'function') el.setSelectionRange(len, len);
+      }
+    } catch (e) {}
+  }, 55);
+}
+
+(function installDoubleTapKeyboardLockV22() {
+  lockAllInputsV22(null);
+
   document.addEventListener('touchend', (e) => {
     const el = e.target;
-    if (!isTextInput(el)) return;
-    requestAnimationFrame(() => {
-      try { if (document.activeElement !== el) el.focus(); } catch (err) {}
-    });
+    if (!isEditableTextFieldV22(el)) return;
+    if (activeUnlockedInputV22 === el && !el.readOnly) return;
+
+    const now = Date.now();
+    if (lastInputTapElV22 === el && (now - lastInputTapTsV22) <= 380) {
+      lastInputTapTsV22 = 0;
+      lastInputTapElV22 = null;
+      unlockInputByDoubleTapV22(el);
+    } else {
+      lastInputTapTsV22 = now;
+      lastInputTapElV22 = el;
+      try { el.blur(); } catch (err) {}
+    }
   }, {passive: true});
+
+  document.addEventListener('dblclick', (e) => {
+    if (isEditableTextFieldV22(e.target)) {
+      unlockInputByDoubleTapV22(e.target);
+    }
+  });
+
+  document.addEventListener('touchstart', (e) => {
+    if (activeUnlockedInputV22 && e.target !== activeUnlockedInputV22) {
+      lockAllInputsV22(null);
+    }
+  }, {passive: true});
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && activeUnlockedInputV22 && e.target === activeUnlockedInputV22) {
+      lockAllInputsV22(null);
+    }
+  });
 })();
 
 (function initV19UiExtras() {
@@ -1752,7 +1877,9 @@ async function pushSelectedZipPath() {
         false
       );
       selectedRunId = '';
-      setTimeout(loadRuns, 1800);
+      window._optimisticPushCardV22 = {sha: d.commit_sha || '', msg: d.commit_msg || '', ts: Date.now()};
+      if (allLoadedRuns.length) renderRunsPayloadToDom({runs: allLoadedRuns, installed: currentInstalledState});
+      setTimeout(loadRuns, 1200);
     } else {
       showStatus('❌ Ошибка: ' + d.error, true);
     }
@@ -1830,7 +1957,9 @@ async function pushLocalFolder() {
         false
       );
       selectedRunId = '';
-      setTimeout(loadRuns, 1800);
+      window._optimisticPushCardV22 = {sha: d.commit_sha || '', msg: d.commit_msg || '', ts: Date.now()};
+      if (allLoadedRuns.length) renderRunsPayloadToDom({runs: allLoadedRuns, installed: currentInstalledState});
+      setTimeout(loadRuns, 1200);
     } else {
       showStatus('❌ Ошибка: ' + d.error, true);
     }
@@ -2072,40 +2201,144 @@ async function downloadBuildSourceZip(runNum, btnEl) {
   }
 }
 
-async function downloadRunApk(runId, runNum, autoInstallAfter) {
+let lastMtRunContextV22 = null;
+let startupApkCheckedRepoV22 = '';
+
+async function downloadRunApk(runId, runNum, autoInstallAfter, forceRedownload) {
   if (!checkAndroidStorageState()) {
     requestAndroidStoragePerm();
     return;
   }
+  lockAllInputsV22(null);
+  lastMtRunContextV22 = { runId: runId, runNum: runNum };
   const sd = document.getElementById('saveDirInput').value.trim();
-  showStatus('⏳ Качаю в 32 потока готовый APK Сборки #' + runNum + ' в папку ' + sd + '...', false);
-  startProgressPolling('📥 Скачивание APK #' + runNum + ' (32 потока)', 'Подключение к CDN GitHub...');
+
+  if (!forceRedownload) {
+    const cachedItem = allLoadedRuns.find(x => String(x.run_number) === String(runNum) && x.apk_cached && x.apk_cached_path);
+    if (cachedItem && autoInstallAfter) {
+      showStatus('⚡ Открыт уже скачанный APK #' + runNum + ' из кэша (без повторного скачивания)!', false);
+      openMtInstallerForApk(cachedItem.apk_cached_path, '', { runId: runId, runNum: runNum });
+      return;
+    }
+  }
+
+  showStatus('⏳ Подготовка APK Сборки #' + runNum + ' (фоновый замок активен — можно сворачивать)...', false);
+  startProgressPolling('📥 Скачивание APK #' + runNum + ' (32 потока)', 'Проверка кэша / подключение к CDN GitHub...');
   try {
     const r = await fetch('/api/download_apk', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({run_id: runId, run_number: runNum, save_dir: sd})
+      body: JSON.stringify({run_id: runId, run_number: runNum, save_dir: sd, force_redownload: Boolean(forceRedownload)})
     });
     const d = await r.json();
     stopProgressPolling();
     if (d.status === 'ok') {
-      showStatus(
-        '✅ Готовый APK #' + runNum + ' скачан в 32 потока!\n' +
-        '• Файл сохранён в: ' + d.apk_path + ' (' + d.size_mb + ' МБ)',
-        false
-      );
+      loadRuns(false);
+      if (d.reused_cache) {
+        showStatus('⚡ APK #' + runNum + ' уже скачан на телефоне (' + d.size_mb + ' МБ) — открываю сразу без перекачивания!', false);
+      } else {
+        showStatus('✅ Готовый APK #' + runNum + ' скачан в 32 потока!\n• Файл: ' + d.apk_path + ' (' + d.size_mb + ' МБ)', false);
+      }
       if (autoInstallAfter) {
-        openMtInstallerForApk(d.apk_path);
+        openMtInstallerForApk(d.apk_path, '', { runId: runId, runNum: runNum });
       }
     } else if (d.status === 'cancelled') {
-      showStatus('⏹ Скачивание APK #' + runNum + ' отменено. Недокачанный файл удалён.', true);
+      showStatus('⏹ Скачивание APK #' + runNum + ' отменено. Временные сегменты удалены.', true);
     } else {
       showStatus('❌ Ошибка скачивания APK: ' + d.error, true);
     }
   } catch (e) {
     stopProgressPolling();
-    showStatus('❌ Ошибка: ' + e, true);
+    showStatus('⚠️ Связь с окном прервалась, проверяю фоновую загрузку...', false);
+    setTimeout(() => { reconnectBackgroundStateV22(runId, runNum, autoInstallAfter); }, 800);
   }
+}
+
+function forceRedownloadCurrentMtApk() {
+  if (!lastMtRunContextV22 || !lastMtRunContextV22.runId) return;
+  closeMtInstaller();
+  downloadRunApk(lastMtRunContextV22.runId, lastMtRunContextV22.runNum, true, true);
+}
+
+async function reconnectBackgroundStateV22(runId, runNum, autoInstallAfter) {
+  try {
+    const r = await fetch('/api/progress');
+    const d = await r.json();
+    if (d.status === 'ok' && d.progress && d.progress.active) {
+      startProgressPolling(d.progress.title, d.progress.detail, d.progress.cancellable);
+      if (runId && autoInstallAfter) {
+        downloadRunApk(runId, runNum, true, false);
+      }
+      return;
+    }
+    if (runNum && autoInstallAfter) {
+      downloadRunApk(runId, runNum, true, false);
+    }
+  } catch (e) {}
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    lockAllInputsV22(null);
+    loadRuns(false);
+    fetch('/api/progress').then(r => r.json()).then(d => {
+      if (d.status === 'ok' && d.progress && d.progress.active && !progressPollTimer) {
+        startProgressPolling(d.progress.title, d.progress.detail, d.progress.cancellable);
+      }
+    }).catch(() => {});
+  }
+});
+
+async function checkStartupPendingApkV22(forceCheck) {
+  try {
+    const repo = (document.getElementById('cfgRepo').value || '').trim();
+    const sd = (document.getElementById('saveDirInput').value || '').trim();
+    if (!repo) return;
+    if (!forceCheck && startupApkCheckedRepoV22 === repo) return;
+    startupApkCheckedRepoV22 = repo;
+
+    const r = await fetch('/api/latest_downloaded_apk', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({repo: repo, save_dir: sd})
+    });
+    const d = await r.json();
+    if (!d || d.status !== 'ok' || !d.found || !d.apk_path) return;
+
+    let info = null;
+    if (window.AndroidBridge && typeof window.AndroidBridge.inspectApkFileJson === 'function') {
+      const raw = window.AndroidBridge.inspectApkFileJson(d.apk_path);
+      if (raw) info = JSON.parse(raw);
+    }
+    if (!info || info.status !== 'ok') return;
+
+    const matchRun = allLoadedRuns.find(x => Number(x.run_number) === Number(d.build_number));
+    const runCtx = matchRun ? { runId: matchRun.id, runNum: d.build_number } : null;
+
+    if (!info.alreadyInstalled) {
+      openMtInstallerForApk(
+        d.apk_path,
+        '💡 Приложение не установлено, но на телефоне уже скачан готовый APK Сборки #' + d.build_number + ' (' + d.size_mb + ' МБ). Установить сразу без скачивания?',
+        runCtx
+      );
+      return;
+    }
+
+    const apkCode = Number(info.apkVersionCode || 0);
+    const instCode = Number(info.installedVersionCode || 0);
+    const apkMtime = Number(info.apkLastModified || d.mtime_ms || 0);
+    const instTime = Number(info.installedLastUpdateTime || 0);
+    const isNewerVer = (apkCode > instCode);
+    const isNewerByDateDiffSig = (apkCode === instCode && info.signatureMismatch && instTime > 0 && apkMtime > instTime);
+
+    if (isNewerVer || isNewerByDateDiffSig) {
+      openMtInstallerForApk(
+        d.apk_path,
+        '💡 На телефоне уже скачан более свежий APK (#' + apkCode + '), чем установленная версия (#' + instCode + '). Завершить установку?',
+        runCtx
+      );
+    }
+  } catch (e) {}
 }
 
 let wasOfflineRuns = false;
@@ -2127,6 +2360,27 @@ function renderRunsPayloadToDom(d) {
   const instPlayerBuild = (currentInstalledState && currentInstalledState.player) ? currentInstalledState.player.build_number : null;
   const listEl = document.getElementById('runsListContainer');
   let html = '';
+  if (window._optimisticPushCardV22) {
+    const op = window._optimisticPushCardV22;
+    const alreadyInList = allLoadedRuns.some(r => r.head_sha === op.sha || (r.full_sha && r.full_sha.indexOf(op.sha) === 0));
+    if (alreadyInList || (Date.now() - op.ts > 45000)) {
+      window._optimisticPushCardV22 = null;
+    } else {
+      const nextNum = (allLoadedRuns.length > 0 && allLoadedRuns[0].run_number) ? (Number(allLoadedRuns[0].run_number) + 1) : '...';
+      html += '<div class="run-item" style="border-color:#e3b341;">';
+      html += '  <div style="min-width:0;">';
+      html += '    <div style="font-weight:bold;color:#e3b341;font-size:12.5px;">⏳ Сборка #' + nextNum + ' (запуск раннера...)</div>';
+      html += '    <div class="run-ver">🏷 <b>Версия #' + nextNum + '</b> — ' + String(op.msg || '').replace(/[<>]/g, '') + '</div>';
+      html += '    <div style="font-size:10px;color:#8b949e;">Только что • ID коммита: ' + op.sha + '</div>';
+      html += '  </div>';
+      html += '  <div class="run-btns">';
+      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 7px;font-size:10.5px;">📦 .zip</button>';
+      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 8px;font-size:10.5px;">📥 APK</button>';
+      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 8px;font-size:10.5px;">⏳ Установить</button>';
+      html += '  </div>';
+      html += '</div>';
+    }
+  }
   for (let i = 0; i < allLoadedRuns.length; i++) {
     const item = allLoadedRuns[i];
     let icon = '⏳';
@@ -2147,11 +2401,19 @@ function renderRunsPayloadToDom(d) {
     html += '    <div class="run-ver">🏷 <b>Версия #' + item.run_number + '</b>' + (verTitle ? ' — ' + verTitle : '') + '</div>';
     html += '    <div style="font-size:10px;color:#8b949e;">Дата: ' + item.created_at + ' • ID коммита: ' + item.head_sha + '</div>';
     html += '  </div>';
-    if (item.conclusion === 'success') {
+    const isReadyEarly = Boolean(item.conclusion === 'success' || item.artifact_ready || (d.active && d.active.run_id === item.id && d.active.artifact_ready));
+    const instBtnLbl = item.apk_cached ? '📲 Установить ✓' : '📲 Установить';
+    if (isReadyEarly) {
       html += '  <div class="run-btns">';
       html += '    <button class="btn btn-purple" style="width:auto;padding:6px 7px;font-size:10.5px;" onclick="event.stopPropagation();downloadBuildSourceZip(' + item.run_number + ', this)">📦 .zip</button>';
-      html += '    <button class="btn btn-blue" style="width:auto;padding:6px 8px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', false)">📥 APK</button>';
-      html += '    <button class="btn btn-green" style="width:auto;padding:6px 8px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', true)">📲 Установить</button>';
+      html += '    <button class="btn btn-blue" style="width:auto;padding:6px 8px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', false, false)">📥 APK</button>';
+      html += '    <button class="btn btn-green" style="width:auto;padding:6px 8px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', true, false)">' + instBtnLbl + '</button>';
+      html += '  </div>';
+    } else if (item.status !== 'completed') {
+      html += '  <div class="run-btns">';
+      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 7px;font-size:10.5px;">📦 .zip</button>';
+      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 8px;font-size:10.5px;">📥 APK</button>';
+      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 8px;font-size:10.5px;">⏳ Установить</button>';
       html += '  </div>';
     } else if (item.conclusion === 'failure') {
       html += '  <div class="run-btns">';

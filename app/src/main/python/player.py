@@ -51,6 +51,119 @@ _TASK_PROGRESS = {
 class DownloadCancelledError(Exception):
     pass
 
+APK_TEMP_CACHE_DIR = "/storage/emulated/0/JENNY/JennyBuilder/apk_cache"
+_FG_LAST_NOTIFY_TS = 0.0
+_FG_WAS_ACTIVE = False
+_ACTIVE_APK_DL_LOCK = _threading_boot.Lock()
+_ACTIVE_APK_DL_EVENTS = {}
+_ACTIVE_APK_DL_RESULTS = {}
+
+
+def _sync_android_fg_guard(active: bool, percent: int, title: str, detail: str):
+    global _FG_LAST_NOTIFY_TS, _FG_WAS_ACTIVE
+    try:
+        from com.chaquo.python import Python
+        now = time.time()
+        if active:
+            if (not _FG_WAS_ACTIVE) or (now - _FG_LAST_NOTIFY_TS >= 1.0) or percent >= 99:
+                ctx = Python.getPlatform().getApplication()
+                from com.jenny.builder import PlaybackService
+                PlaybackService.updateBgTaskGuard(ctx, True, f"{title} ({percent}%)", str(detail or ""))
+                _FG_LAST_NOTIFY_TS = now
+                _FG_WAS_ACTIVE = True
+        else:
+            if _FG_WAS_ACTIVE:
+                ctx = Python.getPlatform().getApplication()
+                from com.jenny.builder import PlaybackService
+                PlaybackService.updateBgTaskGuard(ctx, False, "", "")
+                _FG_WAS_ACTIVE = False
+    except Exception:
+        pass
+
+
+def _is_valid_apk_file(path: str) -> bool:
+    try:
+        if not path or not os.path.isfile(path) or os.path.getsize(path) < 100 * 1024:
+            return False
+        with zipfile.ZipFile(path, "r") as zf:
+            names = set(zf.namelist())
+            return ("AndroidManifest.xml" in names) and any(n.endswith(".dex") for n in names)
+    except Exception:
+        return False
+
+
+def _prune_apk_temp_cache(keep_max: int = 3):
+    try:
+        if not os.path.isdir(APK_TEMP_CACHE_DIR):
+            return
+        apks = []
+        for fn in os.listdir(APK_TEMP_CACHE_DIR):
+            fp = os.path.join(APK_TEMP_CACHE_DIR, fn)
+            if os.path.isfile(fp) and fn.lower().endswith(".apk"):
+                apks.append((os.path.getmtime(fp), fp))
+        apks.sort(reverse=True)
+        for _, old_fp in apks[keep_max:]:
+            try:
+                os.remove(old_fp)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _find_existing_downloaded_apk(repo_short: str, run_number, save_dir: str = "") -> str:
+    if not repo_short or run_number is None or str(run_number) == "":
+        return ""
+    fname = f"{repo_short}_#{run_number}.apk"
+    save_p = os.path.join(save_dir or DEFAULT_SAVE_DIR, fname)
+    cache_p = os.path.join(APK_TEMP_CACHE_DIR, fname)
+    if _is_valid_apk_file(save_p):
+        return save_p
+    if _is_valid_apk_file(cache_p):
+        try:
+            os.makedirs(os.path.dirname(save_p), exist_ok=True)
+            shutil.copy2(cache_p, save_p)
+            if _is_valid_apk_file(save_p):
+                return save_p
+        except Exception:
+            pass
+        return cache_p
+    return ""
+
+
+def find_latest_downloaded_apk_for_repo(repo: str, save_dir: str = "") -> dict:
+    repo_short = (repo or DEFAULT_REPO).split("/")[-1].strip()
+    pat = re.compile(rf"^{re.escape(repo_short)}_#(\d+)(?:_[^/]*)?\.apk$", re.IGNORECASE)
+    candidates = []
+    seen_nums = set()
+    for scan_dir in (save_dir or DEFAULT_SAVE_DIR, APK_TEMP_CACHE_DIR):
+        if not scan_dir or not os.path.isdir(scan_dir):
+            continue
+        try:
+            for fn in os.listdir(scan_dir):
+                m = pat.match(fn)
+                if not m:
+                    continue
+                bnum = int(m.group(1))
+                fp = os.path.join(scan_dir, fn)
+                if _is_valid_apk_file(fp):
+                    st = os.stat(fp)
+                    candidates.append({
+                        "build_number": bnum,
+                        "apk_path": fp,
+                        "filename": fn,
+                        "mtime_ms": int(st.st_mtime * 1000),
+                        "size_mb": round(st.st_size / (1024.0 * 1024.0), 2),
+                    })
+        except Exception:
+            pass
+    if not candidates:
+        return {"found": False, "repo_short": repo_short}
+    candidates.sort(key=lambda x: (x["build_number"], x["mtime_ms"]), reverse=True)
+    best = candidates[0]
+    return {"found": True, "repo_short": repo_short, **best}
+
+
 
 def register_temp_download_file(path: str):
     if not path:
@@ -78,6 +191,15 @@ def cleanup_cancelled_temp_files() -> list:
                 removed.append(p)
         except Exception:
             pass
+    try:
+        if os.path.isdir(APK_TEMP_CACHE_DIR):
+            for entry in os.listdir(APK_TEMP_CACHE_DIR):
+                if entry.startswith("segs_"):
+                    sp = os.path.join(APK_TEMP_CACHE_DIR, entry)
+                    shutil.rmtree(sp, ignore_errors=True)
+                    removed.append(sp)
+    except Exception:
+        pass
     return removed
 
 
@@ -501,7 +623,7 @@ def gh_api(endpoint: str, method: str = "GET", payload: dict = None, token: str 
 # СКАЧИВАНИЕ В 32 ПОТОКА С ПРОГРЕСС-БАРОМ В РЕАЛЬНОМ ВРЕМЕНИ
 # ==============================================================================
 
-def gh_download_bytes(endpoint: str, token: str = "", repo: str = "", task_title: str = "Скачивание с GitHub", threads: int = 32, cancellable: bool = True) -> bytes:
+def gh_download_bytes(endpoint: str, token: str = "", repo: str = "", task_title: str = "Скачивание с GitHub", threads: int = 32, cancellable: bool = True, resume_key: str = "") -> bytes:
     cfg = load_config()
     tok = (token or cfg.get("token") or "").strip()
     rep = (repo or cfg.get("repo") or DEFAULT_REPO).strip()
@@ -605,6 +727,13 @@ def gh_download_bytes(endpoint: str, token: str = "", repo: str = "", task_title
             spd = round(done_mb / el, 1)
             set_progress(True, pct, task_title, f"⚡ {threads} потоков: {done_mb} / {total_mb} МБ ({pct}%) • {spd} МБ/с", cancellable=cancellable)
 
+        seg_dir = os.path.join(APK_TEMP_CACHE_DIR, f"segs_{resume_key}") if resume_key else ""
+        if seg_dir:
+            try:
+                os.makedirs(seg_dir, exist_ok=True)
+            except Exception:
+                seg_dir = ""
+
         def fetch_part(idx: int):
             check_download_cancelled()
             start_b = idx * part_size
@@ -613,6 +742,18 @@ def gh_download_bytes(endpoint: str, token: str = "", repo: str = "", task_title
             if start_b >= total_size or expected_len <= 0:
                 chunks[idx] = b""
                 return
+            seg_file = os.path.join(seg_dir, f"s_{idx}_{expected_len}.bin") if seg_dir else ""
+            if seg_file and os.path.isfile(seg_file):
+                try:
+                    if os.path.getsize(seg_file) == expected_len:
+                        cached_seg = open(seg_file, "rb").read()
+                        if len(cached_seg) == expected_len:
+                            chunks[idx] = cached_seg
+                            downloaded_bytes[idx] = expected_len
+                            _update_multi_prog()
+                            return
+                except Exception:
+                    pass
             for attempt in range(4):
                 check_download_cancelled()
                 try:
@@ -635,7 +776,16 @@ def gh_download_bytes(endpoint: str, token: str = "", repo: str = "", task_title
                             _update_multi_prog()
                         if len(buf) != expected_len:
                             raise RuntimeError(f"Неполный сегмент #{idx}: {len(buf)} из {expected_len}")
-                        chunks[idx] = bytes(buf)
+                        raw_seg = bytes(buf)
+                        if seg_file:
+                            try:
+                                tmp_sf = seg_file + ".tmp"
+                                with open(tmp_sf, "wb") as sf_out:
+                                    sf_out.write(raw_seg)
+                                os.replace(tmp_sf, seg_file)
+                            except Exception:
+                                pass
+                        chunks[idx] = raw_seg
                         return
                 except DownloadCancelledError:
                     raise
@@ -649,7 +799,10 @@ def gh_download_bytes(endpoint: str, token: str = "", repo: str = "", task_title
                 list(ex.map(fetch_part, range(threads)))
             check_download_cancelled()
             set_progress(True, 99, task_title, f"Склейка и проверка ({total_mb} МБ)...", cancellable=cancellable)
-            return b"".join(chunks)
+            joined_all = b"".join(chunks)
+            if seg_dir:
+                shutil.rmtree(seg_dir, ignore_errors=True)
+            return joined_all
         except DownloadCancelledError:
             raise
         except Exception:
@@ -2193,6 +2346,8 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 for r in runs_data.get("workflow_runs", []):
                     title = r.get("display_title") or r.get("name") or "Build"
                     vtag = _extract_version_tag(title)
+                    r_short = (cfg.get("repo") or DEFAULT_REPO).split("/")[-1]
+                    cached_apk_p = _find_existing_downloaded_apk(r_short, r.get("run_number"), cfg.get("save_dir") or DEFAULT_SAVE_DIR)
                     item_dict = {
                         "id": r["id"],
                         "run_number": r.get("run_number"),
@@ -2203,6 +2358,9 @@ class BuilderHandler(BaseHTTPRequestHandler):
                         "full_sha": r.get("head_sha") or "",
                         "title": title,
                         "created_at": (r.get("created_at") or "").replace("T", " ")[:19],
+                        "apk_cached": bool(cached_apk_p),
+                        "apk_cached_path": cached_apk_p,
+                        "artifact_ready": (r.get("conclusion") == "success"),
                     }
                     runs_list.append(item_dict)
                     if r.get("conclusion") == "success" and latest_good_summary is None:
@@ -2226,22 +2384,42 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     steps_out = []
                     failed_job_id = None
                     failed_step_info = None
+                    artifact_ready_flag = False
                     for jb in jobs_data.get("jobs", []):
                         for st in jb.get("steps", []):
                             st_conc = st.get("conclusion")
                             st_stat = st.get("status")
+                            st_name = st.get("name") or ""
                             steps_out.append({
                                 "number": st.get("number"),
-                                "name": st.get("name"),
+                                "name": st_name,
                                 "status": st_stat,
                                 "conclusion": st_conc,
                             })
+                            if ("Выдача готового файла" in st_name or "upload-artifact" in st_name.lower()) and st_conc == "success":
+                                artifact_ready_flag = True
                             if st_conc == "failure" and not failed_job_id:
                                 failed_job_id = jb["id"]
                                 failed_step_info = st
 
+                    if artifact_ready_flag and selected_run_meta:
+                        selected_run_meta["artifact_ready"] = True
+
+                    # Если самый верхний билд ещё идёт (in_progress), но выбран другой — проверим готовность файла у верхнего тоже
+                    if runs_list and runs_list[0].get("status") != "completed" and str(runs_list[0]["id"]) != str(target_run_id):
+                        try:
+                            top_jb = gh_api(f"actions/runs/{runs_list[0]['id']}/jobs", "GET", token=cfg["token"], repo=cfg["repo"])
+                            for jb2 in top_jb.get("jobs", []):
+                                for st2 in jb2.get("steps", []):
+                                    sn2 = st2.get("name") or ""
+                                    if ("Выдача готового файла" in sn2 or "upload-artifact" in sn2.lower()) and st2.get("conclusion") == "success":
+                                        runs_list[0]["artifact_ready"] = True
+                        except Exception:
+                            pass
+
                     active_details = {
                         "run_id": int(target_run_id),
+                        "artifact_ready": artifact_ready_flag,
                         "run_number": selected_run_meta.get("run_number") if selected_run_meta else None,
                         "version_tag": selected_run_meta.get("version_tag") if selected_run_meta else "",
                         "title": selected_run_meta.get("title") if selected_run_meta else "",
@@ -2494,59 +2672,128 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 res = push_file_map_to_github(file_map, commit_msg)
                 return self._send_json({"status": "ok", **res})
 
+            if path == "/api/latest_downloaded_apk":
+                cfg = load_config()
+                rep = (data.get("repo") or cfg.get("repo") or DEFAULT_REPO).strip()
+                sdir = (data.get("save_dir") or cfg.get("save_dir") or DEFAULT_SAVE_DIR).strip()
+                res = find_latest_downloaded_apk_for_repo(rep, sdir)
+                return self._send_json({"status": "ok", **res})
+
             if path == "/api/download_apk":
-                reset_download_cancel()
                 cfg = load_config()
                 run_id = data.get("run_id")
                 run_number = data.get("run_number") or run_id
+                force_redl = bool(data.get("force_redownload", False))
                 save_dir = (data.get("save_dir") or cfg.get("save_dir") or DEFAULT_SAVE_DIR).strip()
                 os.makedirs(save_dir, exist_ok=True)
+                os.makedirs(APK_TEMP_CACHE_DIR, exist_ok=True)
                 save_config({"save_dir": save_dir})
 
                 repo_short = cfg["repo"].split("/")[-1]
                 out_apk_name = f"{repo_short}_#{run_number}.apk"
                 out_apk_path = os.path.join(save_dir, out_apk_name)
-                part_apk_path = out_apk_path + ".part"
-                register_temp_download_file(part_apk_path)
+                cache_apk_path = os.path.join(APK_TEMP_CACHE_DIR, out_apk_name)
 
-                set_progress(True, 2, f"📥 Скачивание APK #{run_number}", "Получение ссылки на артефакт сборки...", cancellable=True)
-                arts = gh_api(f"actions/runs/{run_id}/artifacts", "GET")
-                art_list = arts.get("artifacts", [])
-                if not art_list:
-                    unregister_temp_download_file(part_apk_path)
-                    set_progress(False, 0)
-                    return self._send_json({"status": "error", "error": "Артефакт APK ещё не сформирован в этой сборке"})
-                art_id = art_list[0]["id"]
-                zip_bytes = gh_download_bytes(
-                    f"actions/artifacts/{art_id}/zip",
-                    task_title=f"📥 Скачивание APK #{run_number} (32 потока)",
-                    threads=32,
-                    cancellable=True,
-                )
-                check_download_cancelled()
+                # 1. Мгновенная выдача уже скачанного APK без повторного скачивания!
+                if not force_redl:
+                    existing_apk = _find_existing_downloaded_apk(repo_short, run_number, save_dir)
+                    if existing_apk:
+                        sz_mb = round(os.path.getsize(existing_apk) / (1024.0 * 1024.0), 2)
+                        return self._send_json({
+                            "status": "ok",
+                            "apk_path": existing_apk,
+                            "size_mb": sz_mb,
+                            "run_number": run_number,
+                            "reused_cache": True,
+                        })
 
-                set_progress(True, 98, f"📥 Распаковка APK #{run_number}", f"Сохранение в {out_apk_path}...", cancellable=True)
-                with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
-                    apk_members = [m for m in zf.namelist() if m.lower().endswith(".apk")]
-                    if not apk_members:
-                        cleanup_cancelled_temp_files()
+                # 2. Если этот же APK уже качается прямо сейчас в фоновом потоке — присоединяемся к нему!
+                dl_key = f"{repo_short}_{run_number}"
+                wait_ev = None
+                with _ACTIVE_APK_DL_LOCK:
+                    if dl_key in _ACTIVE_APK_DL_EVENTS:
+                        wait_ev = _ACTIVE_APK_DL_EVENTS[dl_key]
+                    else:
+                        my_ev = _threading_boot.Event()
+                        _ACTIVE_APK_DL_EVENTS[dl_key] = my_ev
+                        _ACTIVE_APK_DL_RESULTS.pop(dl_key, None)
+
+                if wait_ev is not None:
+                    wait_ev.wait(timeout=600)
+                    res_joined = _ACTIVE_APK_DL_RESULTS.get(dl_key)
+                    if res_joined:
+                        return self._send_json(res_joined)
+                    existing_after = _find_existing_downloaded_apk(repo_short, run_number, save_dir)
+                    if existing_after:
+                        sz_mb = round(os.path.getsize(existing_after) / (1024.0 * 1024.0), 2)
+                        return self._send_json({"status": "ok", "apk_path": existing_after, "size_mb": sz_mb, "run_number": run_number, "reused_cache": True})
+
+                reset_download_cancel()
+                part_cache_path = cache_apk_path + ".part"
+                register_temp_download_file(part_cache_path)
+                try:
+                    set_progress(True, 2, f"📥 Скачивание APK #{run_number}", "Получение ссылки на артефакт сборки...", cancellable=True)
+                    arts = gh_api(f"actions/runs/{run_id}/artifacts", "GET")
+                    art_list = arts.get("artifacts", [])
+                    if not art_list:
+                        unregister_temp_download_file(part_cache_path)
                         set_progress(False, 0)
-                        return self._send_json({"status": "error", "error": "Внутри артефакта не найден .apk файл"})
-                    with open(part_apk_path, "wb") as out_f:
-                        out_f.write(zf.read(apk_members[0]))
+                        err_resp = {"status": "error", "error": "Артефакт APK ещё не сформирован в этой сборке"}
+                        _ACTIVE_APK_DL_RESULTS[dl_key] = err_resp
+                        return self._send_json(err_resp)
 
-                check_download_cancelled()
-                os.replace(part_apk_path, out_apk_path)
-                unregister_temp_download_file(part_apk_path)
+                    art_id = art_list[0]["id"]
+                    zip_bytes = gh_download_bytes(
+                        f"actions/artifacts/{art_id}/zip",
+                        task_title=f"📥 Скачивание APK #{run_number} (32 потока)",
+                        threads=32,
+                        cancellable=True,
+                        resume_key=f"{repo_short}_{run_number}_{art_id}",
+                    )
+                    check_download_cancelled()
 
-                sz_mb = round(os.path.getsize(out_apk_path) / (1024.0 * 1024.0), 2)
-                set_progress(False, 100, "Готово", f"APK #{run_number} сохранён", cancellable=False)
-                return self._send_json({
-                    "status": "ok",
-                    "apk_path": out_apk_path,
-                    "size_mb": sz_mb,
-                    "run_number": run_number,
-                })
+                    set_progress(True, 98, f"📥 Распаковка APK #{run_number}", "Сохранение в кэш и папку загрузок...", cancellable=True)
+                    with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+                        apk_members = [m for m in zf.namelist() if m.lower().endswith(".apk")]
+                        if not apk_members:
+                            cleanup_cancelled_temp_files()
+                            set_progress(False, 0)
+                            err_resp = {"status": "error", "error": "Внутри артефакта не найден .apk файл"}
+                            _ACTIVE_APK_DL_RESULTS[dl_key] = err_resp
+                            return self._send_json(err_resp)
+                        with open(part_cache_path, "wb") as out_f:
+                            out_f.write(zf.read(apk_members[0]))
+
+                    check_download_cancelled()
+                    os.replace(part_cache_path, cache_apk_path)
+                    unregister_temp_download_file(part_cache_path)
+                    _prune_apk_temp_cache(keep_max=3)
+
+                    final_apk_path = cache_apk_path
+                    try:
+                        tmp_dest = out_apk_path + ".part"
+                        shutil.copy2(cache_apk_path, tmp_dest)
+                        os.replace(tmp_dest, out_apk_path)
+                        final_apk_path = out_apk_path
+                    except Exception:
+                        final_apk_path = cache_apk_path
+
+                    sz_mb = round(os.path.getsize(final_apk_path) / (1024.0 * 1024.0), 2)
+                    set_progress(False, 100, "Готово", f"APK #{run_number} сохранён", cancellable=False)
+                    ok_resp = {
+                        "status": "ok",
+                        "apk_path": final_apk_path,
+                        "size_mb": sz_mb,
+                        "run_number": run_number,
+                        "reused_cache": False,
+                    }
+                    _ACTIVE_APK_DL_RESULTS[dl_key] = ok_resp
+                    return self._send_json(ok_resp)
+                finally:
+                    with _ACTIVE_APK_DL_LOCK:
+                        ev_done = _ACTIVE_APK_DL_EVENTS.pop(dl_key, None)
+                        if ev_done:
+                            ev_done.set()
 
             if path == "/api/download_last_good_zip":
                 cfg = load_config()
