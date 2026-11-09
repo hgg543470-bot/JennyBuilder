@@ -12,6 +12,7 @@ import zipfile
 import difflib
 import datetime
 import traceback
+import doctor
 import http.client
 import urllib.request
 import urllib.parse
@@ -1617,6 +1618,19 @@ def push_file_map_to_github(file_map: dict, commit_msg: str, token: str = "", re
         raise ValueError(
             "Android скрыл файлы в этой папке (0 файлов). Нажми красную кнопку «🔓 Выдать Доступ ко всем файлам» вверху экрана и повтори!"
         )
+    set_progress(True, 2, "🛡️ Предполётная проверка кода", "Проверка синтаксиса .py и .js перед отправкой на GitHub...")
+    for rel_p, content_b in file_map.items():
+        if rel_p.endswith(".py"):
+            try:
+                ast.parse(content_b.decode("utf-8", errors="replace"))
+            except SyntaxError as se:
+                set_progress(False, 0)
+                raise ValueError(f"🛑 СТОП! Синтаксическая ошибка в {rel_p} на строке {se.lineno}: {se.msg}. Сборка остановлена!")
+        elif rel_p.endswith(".js"):
+            ok_j, err_j = doctor.verify_js_syntax(content_b.decode("utf-8", errors="replace"), rel_p)
+            if not ok_j:
+                set_progress(False, 0)
+                raise ValueError(f"🛑 СТОП! Синтаксическая ошибка JS в {rel_p}: {err_j}. Сборка остановлена!")
     set_progress(True, 5, "📤 Экспорт на GitHub", "Проверка дерева файлов в репозитории GitHub...")
     _ensure_build_yml_stamps_version(file_map)
     branch_name, head_sha = _resolve_target_branch(token=token, repo=repo)
@@ -2330,6 +2344,40 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     "filename": fname,
                     "size_kb": sz_kb,
                 })
+
+            if path == "/api/doctor/scan":
+                cfg = load_config()
+                folder_p = (data.get("folder_path") or cfg.get("source_dir") or DEFAULT_PROJECT_DIR).strip()
+                set_progress(True, 25, "🩺 Рентген проекта", f"Проверка синтаксиса, дублей и API в {folder_p}...")
+                res = doctor.scan_project_health(folder_p)
+                res.pop("_internal", None)
+                set_progress(False, 100, "Готово", "Диагностика завершена")
+                return self._send_json(res)
+
+            if path == "/api/doctor/clean":
+                cfg = load_config()
+                folder_p = (data.get("folder_path") or cfg.get("source_dir") or DEFAULT_PROJECT_DIR).strip()
+                set_progress(True, 20, "🧹 Безопасная чистка проекта", "Создание бэкапа и очистка с проверкой V8/AST...")
+                res = doctor.clean_project_safe(
+                    folder_p,
+                    clean_trash=bool(data.get("clean_trash", True)),
+                    clean_overrides=bool(data.get("clean_overrides", True)),
+                    clean_unused_so=bool(data.get("clean_unused_so", False)),
+                )
+                set_progress(False, 100, "Готово", f"Очищено {res['freed_kb']} КБ")
+                return self._send_json(res)
+
+            if path == "/api/doctor/restore":
+                cfg = load_config()
+                folder_p = (data.get("folder_path") or cfg.get("source_dir") or DEFAULT_PROJECT_DIR).strip()
+                res = doctor.restore_latest_backup(folder_p)
+                return self._send_json(res)
+
+            if path == "/api/doctor/hud":
+                cfg = load_config()
+                folder_p = (data.get("folder_path") or cfg.get("source_dir") or DEFAULT_PROJECT_DIR).strip()
+                res = doctor.toggle_blackbox_hud(folder_p, enable=bool(data.get("enable", True)))
+                return self._send_json(res)
 
             if path == "/api/compare":
                 base_spec = (data.get("base_spec") or "LOCAL_FOLDER").strip()

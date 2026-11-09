@@ -226,7 +226,7 @@
 
 <div class="card" id="topHeaderCard">
   <div class="card-title">
-    <span>🛠️ JENNY BUILDER v1.9</span>
+    <span>🛠️ JENNY BUILDER v2.0 (DOCTOR)</span>
     <button class="btn" style="width:auto;padding:4px 8px;font-size:11px;" onclick="toggleSettings()">⚙️ Настройки</button>
   </div>
   <div id="settingsArea" style="display:none;margin-top:6px;border-top:1px solid #30363d;padding-top:8px;">
@@ -271,6 +271,49 @@
   </div>
 </div>
 
+<!-- 0. РЕВИЗОР КОДА, БЕЗОПАСНАЯ ЧИСТКА И ЧЁРНЫЙ ЯЩИК ОШИБОК -->
+<div class="card" style="border-color:#a371f7;background:linear-gradient(180deg,#171324 0%,#161b22 100%);">
+  <div class="card-title"><span style="color:#e2c5ff;">🩺 0. РЕВИЗОР КОДА, ОЧИСТКА МУСОРА И АВТО-ОТЛАДКА (v2.0)</span></div>
+  <div style="font-size:11px;color:#c9d1d9;margin-bottom:8px;line-height:1.35;">
+    Проверяет рабочую папку по 6 уровням: синтаксис Python/JS (со стековой защитой шаблонов), забытые дампы, дубли <code>.so</code>, перекрытые функции и обрывы связи Фронтенд ↔ Бэкенд. Бэкапы хранятся <b>вне проекта</b> в <code>JENNY/DoctorBackups</code>.
+  </div>
+  <div class="stack-btns">
+    <button class="btn btn-purple" onclick="runDoctorScan()">
+      <span class="btn-main">🔍 Просканировать рабочую папку (Полный рентген кода)</span>
+      <span class="btn-sub">Синтаксис AST/V8 + Мусор + Дубли .so + Мёртвые функции + Прозвонка API</span>
+    </button>
+    <div style="background:#0d1117;border:1px solid #30363d;border-radius:9px;padding:8px 10px;display:flex;flex-direction:column;gap:6px;">
+      <div style="font-size:11px;font-weight:bold;color:#79c0ff;">Что вычищать при нажатии «Безопасная чистка»:</div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:#e6edf3;cursor:pointer;">
+        <input type="checkbox" id="chkDocTrash" checked style="width:16px;height:16px;accent-color:#3fb950;">
+        <span>🗑️ <b>Файловый мусор и забытые дампы</b> (<code>FULL_PROJECT_SRC.txt</code>, <code>1.py</code>, логи, бэкапы)</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:#e6edf3;cursor:pointer;">
+        <input type="checkbox" id="chkDocOverrides" checked style="width:16px;height:16px;accent-color:#3fb950;">
+        <span>✂️ <b>Мёртвые переопределённые функции</b> (<code>.py</code> и <code>.js</code> со стековой защитой скобок)</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:#e6edf3;cursor:pointer;">
+        <input type="checkbox" id="chkDocUnusedSo" style="width:16px;height:16px;accent-color:#e3b341;">
+        <span>🧬 <b>Лишние дубли .so библиотек</b> (оставить только реально используемые в коде)</span>
+      </label>
+    </div>
+    <div class="grid2">
+      <button class="btn btn-green" onclick="runDoctorClean()"><span class="btn-main">🧹 Безопасная чистка</span><span class="btn-sub">С авто-бэкапом вне проекта</span></button>
+      <button class="btn btn-gold" onclick="runDoctorRestore()"><span class="btn-main">⏪ Откатить чистку</span><span class="btn-sub">Вернуть оригиналы из бэкапа</span></button>
+    </div>
+    <div class="grid2">
+      <button class="btn btn-cyan" onclick="toggleDoctorHud(true)"><span class="btn-main">🐞 Встроить «Чёрный ящик»</span><span class="btn-sub">Ловец ошибок на экране плеера</span></button>
+      <button class="btn btn-red" onclick="toggleDoctorHud(false)"><span class="btn-main">🚫 Убрать «Чёрный ящик»</span><span class="btn-sub">Чистый index.html без ловца</span></button>
+    </div>
+  </div>
+  <div id="doctorReportPanel" class="diff-box" style="border-color:#a371f7;margin-top:8px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <b style="color:#e2c5ff;font-size:12px;" id="doctorReportTitle">🩺 Отчёт Ревизора</b>
+      <button class="btn btn-blue" style="width:auto;padding:3px 8px;font-size:10.5px;" onclick="copyDoctorReport()">📋 Скопировать отчёт</button>
+    </div>
+    <pre id="doctorReportPre" class="diff-pre"></pre>
+  </div>
+</div>
 <!-- 1. РАБОТА С АРХИВОМ, ПАПКОЙ И ДВУСТОРОННИМ GIT DIFF -->
 <div class="card">
   <div class="card-title">📤 1. ОБМЕН МЕЖДУ ПАПКОЙ ПРОЕКТА, АРХИВОМ (.ZIP) И GITHUB</div>
@@ -2531,6 +2574,72 @@ async function promptMkdir() {
   if (d.status === 'ok') {
     loadBrowserDir(d.created);
   }
+}
+
+
+let lastDoctorReportText = '';
+async function runDoctorScan() {
+  if (!checkAndroidStorageState()) { requestAndroidStoragePerm(); return; }
+  const fp = document.getElementById('sourceFolderInput').value.trim();
+  const panel = document.getElementById('doctorReportPanel');
+  const pre = document.getElementById('doctorReportPre');
+  panel.style.display = 'block';
+  pre.textContent = '⏳ Провожу полный рентген папки ' + fp + '...';
+  startProgressPolling('🩺 Рентген проекта', 'Анализ кода и структуры...', false);
+  try {
+    const r = await fetch('/api/doctor/scan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({folder_path: fp}) });
+    const d = await r.json();
+    stopProgressPolling();
+    if (d.status === 'ok') {
+      lastDoctorReportText = d.report_text || '';
+      pre.textContent = lastDoctorReportText;
+      document.getElementById('doctorReportTitle').textContent = (d.syntax_ok ? '🟢 Синтаксис OK' : '🔴 Ошибки синтаксиса!') + ' • Мусор: ' + d.trash_kb + ' КБ • Дубли кода: ' + d.overridden_kb + ' КБ';
+      showStatus('✅ Рентген завершён! Мусор: ' + d.trash_kb + ' КБ, мёртвые функции: ' + d.overridden_count + ' шт. (' + d.overridden_kb + ' КБ), лишние .so: ' + d.so_unused_mb + ' МБ.', !d.syntax_ok);
+    } else { pre.textContent = '❌ Ошибка: ' + d.error; showStatus('❌ Ошибка: ' + d.error, true); }
+  } catch (e) { stopProgressPolling(); pre.textContent = '❌ Ошибка сети: ' + e; }
+}
+async function runDoctorClean() {
+  if (!checkAndroidStorageState()) { requestAndroidStoragePerm(); return; }
+  const fp = document.getElementById('sourceFolderInput').value.trim();
+  const panel = document.getElementById('doctorReportPanel');
+  const pre = document.getElementById('doctorReportPre');
+  panel.style.display = 'block';
+  pre.textContent = '⏳ Создаю бэкап вне проекта и провожу безопасную чистку...';
+  startProgressPolling('🧹 Безопасная чистка', 'Проверка AST и стекового баланса скобок...', false);
+  try {
+    const r = await fetch('/api/doctor/clean', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ folder_path: fp, clean_trash: document.getElementById('chkDocTrash').checked, clean_overrides: document.getElementById('chkDocOverrides').checked, clean_unused_so: document.getElementById('chkDocUnusedSo').checked })
+    });
+    const d = await r.json();
+    stopProgressPolling();
+    if (d.status === 'ok') {
+      lastDoctorReportText = d.summary + (d.backup_dir ? ('\n\n📦 Бэкап вне проекта: ' + d.backup_dir) : '');
+      pre.textContent = lastDoctorReportText;
+      showStatus('✅ Чистка завершена! Освобождено: ' + d.freed_kb + ' КБ (' + d.freed_mb + ' МБ).', false);
+    } else { pre.textContent = '❌ Ошибка: ' + d.error; showStatus('❌ Ошибка: ' + d.error, true); }
+  } catch (e) { stopProgressPolling(); showStatus('❌ Ошибка: ' + e, true); }
+}
+async function runDoctorRestore() {
+  if (!checkAndroidStorageState()) { requestAndroidStoragePerm(); return; }
+  const fp = document.getElementById('sourceFolderInput').value.trim();
+  const r = await fetch('/api/doctor/restore', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({folder_path: fp}) });
+  const d = await r.json();
+  if (d.status === 'ok') showStatus('⏪ Откат выполнен! Восстановлено: ' + d.restored_count + ' из ' + d.backup_used, false);
+  else showStatus('❌ Ошибка отката: ' + d.error, true);
+}
+async function toggleDoctorHud(enable) {
+  if (!checkAndroidStorageState()) { requestAndroidStoragePerm(); return; }
+  const fp = document.getElementById('sourceFolderInput').value.trim();
+  const r = await fetch('/api/doctor/hud', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({folder_path: fp, enable: enable}) });
+  const d = await r.json();
+  if (d.status === 'ok') showStatus('🐞 ' + d.msg, false);
+  else showStatus('❌ Ошибка: ' + d.error, true);
+}
+function copyDoctorReport() {
+  const txt = lastDoctorReportText || document.getElementById('doctorReportPre').textContent || '';
+  if (txt && navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt);
+  showStatus('📋 Отчёт Ревизора скопирован!', false);
 }
 
 initApp();
