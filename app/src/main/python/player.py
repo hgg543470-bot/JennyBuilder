@@ -29,7 +29,7 @@ DEFAULT_REPO = "hgg543470-bot/JennyPlayer"
 
 EXCLUDE_DIRS = {".git", "__pycache__", ".gradle", "build", ".idea", ".Temp"}
 EXCLUDE_EXTS = {".pyc", ".pyo", ".log"}
-EXCLUDE_FILES = {"omni_full_trace.log", "omni_simple.log", "shizuku_window_dump.txt"}
+EXCLUDE_FILES = {"omni_full_trace.log", "omni_simple.log", "shizuku_window_dump.txt", "SO_LIBRARIES_PASSPORT.txt"}
 
 _MEM_CFG = {}
 _CACHED_RUNS_LIST = []
@@ -1631,17 +1631,21 @@ def push_file_map_to_github(file_map: dict, commit_msg: str, token: str = "", re
             if not ok_j:
                 set_progress(False, 0)
                 raise ValueError(f"🛑 СТОП! Синтаксическая ошибка JS в {rel_p}: {err_j}. Сборка остановлена!")
-    set_progress(True, 5, "📤 Экспорт на GitHub", "Проверка дерева файлов в репозитории GitHub...")
+
+    set_progress(True, 5, "📤 Экспорт на GitHub", "Сверка дерева файлов и поиск удалённого мусора на GitHub...")
     _ensure_build_yml_stamps_version(file_map)
     branch_name, head_sha = _resolve_target_branch(token=token, repo=repo)
     commit_info = gh_api(f"git/commits/{head_sha}", "GET", token=token, repo=repo)
     base_tree_sha = commit_info["tree"]["sha"]
     tree_info = gh_api(f"git/trees/{base_tree_sha}?recursive=1", "GET", token=token, repo=repo)
-    remote_blobs = {
-        item["path"]: item["sha"]
-        for item in tree_info.get("tree", [])
-        if item.get("type") == "blob"
-    }
+
+    remote_blobs = {}
+    remote_modes = {}
+    for item in tree_info.get("tree", []):
+        if item.get("type") == "blob":
+            p = item["path"]
+            remote_blobs[p] = item["sha"]
+            remote_modes[p] = item.get("mode") or "100644"
 
     to_upload = []
     for rel_path, content_bytes in file_map.items():
@@ -1649,8 +1653,20 @@ def push_file_map_to_github(file_map: dict, commit_msg: str, token: str = "", re
         if remote_blobs.get(rel_path) != local_sha:
             to_upload.append((rel_path, content_bytes))
 
+    to_delete = []
+    for rel_path in sorted(remote_blobs.keys()):
+        if rel_path not in file_map:
+            norm_low = rel_path.replace("\\", "/").lower()
+            # Броня на нативные .so библиотеки в jniLibs и workflow (на случай пуша папки без .so)
+            if norm_low.endswith(".so") and "jnilibs/" in norm_low:
+                continue
+            if norm_low == ".github/workflows/build.yml":
+                continue
+            to_delete.append(rel_path)
+
     tree_updates = []
     changed_count = len(to_upload)
+    deleted_count = len(to_delete)
 
     for idx, (rel_path, content_bytes) in enumerate(to_upload, 1):
         pct = 15 + int((idx * 70) / max(1, changed_count))
@@ -1671,6 +1687,14 @@ def push_file_map_to_github(file_map: dict, commit_msg: str, token: str = "", re
             "mode": mode_str,
             "type": "blob",
             "sha": blob_res["sha"],
+        })
+
+    for del_path in to_delete:
+        tree_updates.append({
+            "path": del_path,
+            "mode": remote_modes.get(del_path, "100644"),
+            "type": "blob",
+            "sha": None,
         })
 
     set_progress(True, 90, "📤 Экспорт на GitHub", "Формирование коммита и запуск GitHub Actions...")
@@ -1711,9 +1735,11 @@ def push_file_map_to_github(file_map: dict, commit_msg: str, token: str = "", re
         "commit_sha": new_commit_sha[:7],
         "commit_msg": commit_msg,
         "changed_files": changed_count,
+        "deleted_files": deleted_count,
         "total_files": len(file_map),
         "branch": branch_name,
     }
+
 
 
 def _unpack_zip_bytes_to_folder(zip_bytes: bytes, target_folder: str) -> int:

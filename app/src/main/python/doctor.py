@@ -22,15 +22,23 @@ TRASH_FILE_PATTERNS = [
 
 TRASH_DIR_NAMES = {"native_src_backup", "_cleanup_backup_327", "_cleanup_backup", ".Temp"}
 
-def _is_trash_rel_path(rel_path: str) -> str:
+def _is_trash_rel_path(rel_path: str, folder_path: str = "") -> str:
     norm = rel_path.replace("\\", "/").lstrip("/")
     parts = norm.split("/")
     for p in parts[:-1]:
         if p in TRASH_DIR_NAMES or p.startswith("_cleanup_backup"):
             return f"Папка старого бэкапа ({p})"
     fname = parts[-1]
+    ext = os.path.splitext(fname)[1].lower()
+    if fname == "SO_LIBRARIES_PASSPORT.txt":
+        return "Временный паспорт .so от скачивания архива"
     if fname.endswith(".log"):
         return "Забытый лог-файл (.log)"
+    if len(parts) == 1 and folder_path and os.path.isdir(os.path.join(folder_path, "app/src/main/python")):
+        if os.path.isfile(os.path.join(folder_path, "app/src/main/python", fname)):
+            return "Клон рабочего файла в корне (оригинал лежит в app/src/main/python/)"
+        if ext in (".py", ".js", ".sh"):
+            return "Отработавший скрипт/патчер в корне Android-проекта"
     for pat in TRASH_FILE_PATTERNS:
         if re.match(pat, fname, re.IGNORECASE):
             if len(parts) == 1 or fname.endswith((".log", ".bak", ".orig", ".tmp_check", "_for_AI.txt")):
@@ -521,7 +529,7 @@ def scan_project_health(folder_path: str) -> dict:
             except Exception:
                 sz = 0
 
-            trash_reason = _is_trash_rel_path(rel_p)
+            trash_reason = _is_trash_rel_path(rel_p, folder_path)
             if trash_reason:
                 trash_files.append({"rel_path": rel_p, "full_path": full_p, "is_dir": False, "bytes": sz, "reason": trash_reason})
                 continue
@@ -595,18 +603,35 @@ def scan_project_health(folder_path: str) -> dict:
     all_code_concat = "\n".join(txt for _, txt in code_text_blobs)
     so_unused = []
     so_active = []
+    jni_so_names = [x["name"] for x in so_files if "jnilibs/" in x["rel_path"].lower()]
     for s in so_files:
         fname = s["name"]
-        short_stem = re.sub(r"^lib|\.so$", "", fname)
-        is_py_dir_dup = s["rel_path"].startswith("app/src/main/python/") and any(x["name"] == fname and "jniLibs" in x["rel_path"] for x in so_files)
+        rel_low = s["rel_path"].lower()
+        is_py_dir_dup = rel_low.startswith("app/src/main/python/") and any(x["name"] == fname and "jnilibs/" in x["rel_path"].lower() for x in so_files)
         if is_py_dir_dup:
             s["reason"] = "Дубликат .so в папке python/ (основной уже лежит в jniLibs)"
             so_unused.append(s)
-        elif fname in all_code_concat or f'"{short_stem}"' in all_code_concat or f"'{short_stem}'" in all_code_concat:
-            so_active.append(s)
+        elif "jnilibs/" in rel_low:
+            # Ищем только явно устаревшие версионные дубли одного и того же движка (например v36ir рядом с v40ir)
+            m_ver = re.match(r"^(lib[a-z0-9]+?)(?:_v(\d+)[a-z0-9]*)?\.so$", fname)
+            is_old_ver = False
+            if m_ver:
+                base_lib = m_ver.group(1)
+                my_ver = int(m_ver.group(2) or 0)
+                for other_n in jni_so_names:
+                    if other_n == fname:
+                        continue
+                    m_oth = re.match(r"^(lib[a-z0-9]+?)(?:_v(\d+)[a-z0-9]*)?\.so$", other_n)
+                    if m_oth and m_oth.group(1) == base_lib and int(m_oth.group(2) or 0) > my_ver:
+                        is_old_ver = True
+                        s["reason"] = f"Старая версия движка (в jniLibs уже есть более свежая {other_n})"
+                        break
+            if is_old_ver:
+                so_unused.append(s)
+            else:
+                so_active.append(s)
         else:
-            s["reason"] = "Не упоминается ни в одном исходнике (.py / .java / build.yml)"
-            so_unused.append(s)
+            so_active.append(s)
 
     missing_backend_routes = []
     for rt, locs in sorted(frontend_api_calls.items()):

@@ -1,6 +1,49 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
+<!-- [JENNY_BLACKBOX_HUD_V20_START] -->
+<script>
+(function(){
+  if (window.__jennyBlackBoxInstalledV20) return;
+  window.__jennyBlackBoxInstalledV20 = true;
+  window.__jennyErrorLogsV20 = [];
+  var badge = null, modal = null, pre = null;
+  function ensureUi() {
+    if (badge || !document.body) return;
+    badge = document.createElement('div');
+    badge.style.cssText = 'position:fixed;bottom:74px;right:10px;z-index:999998;background:rgba(220,38,38,0.92);color:#fff;font-family:monospace;font-size:11px;font-weight:bold;padding:5px 9px;border-radius:14px;border:1.5px solid #fca5a5;box-shadow:0 4px 14px rgba(0,0,0,0.7);display:none;cursor:pointer;user-select:none;';
+    badge.onclick = function() { if (modal) modal.style.display = 'flex'; };
+    document.body.appendChild(badge);
+    modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,0.85);display:none;align-items:center;justify-content:center;padding:12px;';
+    modal.innerHTML = '<div style="width:100%;max-width:440px;background:#161b22;border:1.5px solid #ff7b72;border-radius:12px;padding:12px;color:#e6edf3;font-family:sans-serif;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><b style="color:#ff7b72;font-size:13px;">🐞 Бортовой самописец ошибок</b><button id="jbHudCloseBtn" style="background:#21262d;color:#fff;border:1px solid #30363d;border-radius:6px;padding:3px 8px;">✕</button></div><pre id="jbHudPre" style="max-height:55vh;overflow-y:auto;background:#090d13;padding:8px;border-radius:6px;font-family:monospace;font-size:10.5px;color:#ffa198;white-space:pre-wrap;word-break:break-all;border:1px solid #30363d;margin:6px 0;"></pre><div style="display:flex;gap:6px;"><button id="jbHudCopyBtn" style="flex:1;background:#238636;color:#fff;border:none;border-radius:7px;padding:8px;font-weight:bold;font-size:12px;">📋 Скопировать для ИИ</button><button id="jbHudClearBtn" style="background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:7px;padding:8px;font-size:12px;">🗑 Очистить</button></div></div>';
+    document.body.appendChild(modal);
+    pre = modal.querySelector('#jbHudPre');
+    modal.querySelector('#jbHudCloseBtn').onclick = function() { modal.style.display = 'none'; };
+    modal.querySelector('#jbHudClearBtn').onclick = function() { window.__jennyErrorLogsV20 = []; badge.style.display = 'none'; modal.style.display = 'none'; };
+    modal.querySelector('#jbHudCopyBtn').onclick = function() {
+      var txt = window.__jennyErrorLogsV20.join('\n\n');
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt);
+      this.textContent = '✅ Скопировано!';
+      var self = this;
+      setTimeout(function(){ self.textContent = '📋 Скопировать для ИИ'; }, 1800);
+    };
+  }
+  function recordErr(kind, msg, src, line, col, stack) {
+    var ts = new Date().toTimeString().split(' ')[0];
+    var loc = src ? (src.split('/').pop() + ':' + (line || 0) + (col ? ':' + col : '')) : '';
+    var entry = '[' + ts + '] ' + kind + ': ' + msg + (loc ? '\n  📍 Файл: ' + loc : '') + (stack ? '\n  🧵 Стек: ' + String(stack).split('\n').slice(0, 4).join(' | ') : '');
+    window.__jennyErrorLogsV20.push(entry);
+    if (window.__jennyErrorLogsV20.length > 50) window.__jennyErrorLogsV20.shift();
+    ensureUi();
+    if (badge) { badge.textContent = '🐞 Ошибок: ' + window.__jennyErrorLogsV20.length; badge.style.display = 'block'; }
+    if (pre) pre.textContent = window.__jennyErrorLogsV20.join('\n----------------------------------\n');
+  }
+  window.addEventListener('error', function(e) { recordErr('JS Error', e.message || String(e), e.filename, e.lineno, e.colno, e.error && e.error.stack); });
+  window.addEventListener('unhandledrejection', function(e) { var r = e.reason || {}; recordErr('Promise Reject', r.message || String(r), '', 0, 0, r.stack || ''); });
+})();
+</script>
+<!-- [JENNY_BLACKBOX_HUD_V20_END] -->
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Jenny Builder</title>
@@ -226,7 +269,7 @@
 
 <div class="card" id="topHeaderCard">
   <div class="card-title">
-    <span>🛠️ JENNY BUILDER v2.0 (DOCTOR)</span>
+    <span>🛠️ JENNY BUILDER v2.1 (DOCTOR)</span>
     <button class="btn" style="width:auto;padding:4px 8px;font-size:11px;" onclick="toggleSettings()">⚙️ Настройки</button>
   </div>
   <div id="settingsArea" style="display:none;margin-top:6px;border-top:1px solid #30363d;padding-top:8px;">
@@ -273,7 +316,7 @@
 
 <!-- 0. РЕВИЗОР КОДА, БЕЗОПАСНАЯ ЧИСТКА И ЧЁРНЫЙ ЯЩИК ОШИБОК -->
 <div class="card" style="border-color:#a371f7;background:linear-gradient(180deg,#171324 0%,#161b22 100%);">
-  <div class="card-title"><span style="color:#e2c5ff;">🩺 0. РЕВИЗОР КОДА, ОЧИСТКА МУСОРА И АВТО-ОТЛАДКА (v2.0)</span></div>
+  <div class="card-title"><span style="color:#e2c5ff;">🩺 0. РЕВИЗОР КОДА, ОЧИСТКА МУСОРА И АВТО-ОТЛАДКА (v2.1)</span></div>
   <div style="font-size:11px;color:#c9d1d9;margin-bottom:8px;line-height:1.35;">
     Проверяет рабочую папку по 6 уровням: синтаксис Python/JS (со стековой защитой шаблонов), забытые дампы, дубли <code>.so</code>, перекрытые функции и обрывы связи Фронтенд ↔ Бэкенд. Бэкапы хранятся <b>вне проекта</b> в <code>JENNY/DoctorBackups</code>.
   </div>
@@ -1704,7 +1747,7 @@ async function pushSelectedZipPath() {
       showStatus(
         '✅ Архив отправлен в GitHub (' + repo + ')!\n' +
         '• Описание: «' + d.commit_msg + '»\n' +
-        '• Обновлено файлов: ' + d.changed_files + ' из ' + d.total_files + '\n' +
+        '• Обновлено: ' + d.changed_files + ' из ' + d.total_files + (d.deleted_files ? (' | Удалено мусора с GitHub: ' + d.deleted_files) : '') + '\n' +
         '• Запущена новая сборка APK — её номер и этапы появятся ниже через пару секунд!',
         false
       );
@@ -1741,7 +1784,7 @@ function pushSystemFileZip(inputEl) {
         showStatus(
           '✅ Архив ' + file.name + ' отправлен в GitHub (' + repo + ')!\n' +
           '• Описание: «' + d.commit_msg + '»\n' +
-          '• Обновлено файлов: ' + d.changed_files + ' из ' + d.total_files + '\n' +
+          '• Обновлено: ' + d.changed_files + ' из ' + d.total_files + (d.deleted_files ? (' | Удалено мусора с GitHub: ' + d.deleted_files) : '') + '\n' +
           '• Запущена новая сборка APK!',
           false
         );
@@ -1782,7 +1825,7 @@ async function pushLocalFolder() {
         '• Откуда: ' + fp + '\n' +
         '• Куда: GitHub (' + repo + ')\n' +
         '• Описание: «' + d.commit_msg + '»\n' +
-        '• Обновлено файлов: ' + d.changed_files + ' из ' + d.total_files + '\n' +
+        '• Обновлено: ' + d.changed_files + ' из ' + d.total_files + (d.deleted_files ? (' | Удалено мусора с GitHub: ' + d.deleted_files) : '') + '\n' +
         '• Сборка APK запущена — следи за прогрессом внизу!',
         false
       );
