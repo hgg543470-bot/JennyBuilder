@@ -61,6 +61,19 @@ jobs:
         open("app/build.gradle", "w", encoding="utf-8").write(s)
         STAMP_EOF
 
+    - name: Постоянный ключ подписи APK (без смены подписи при обновлениях)
+      id: cache-keystore
+      uses: actions/cache@v4
+      with:
+        path: ~/.android/debug.keystore
+        key: jenny-builder-fixed-debug-keystore-v1
+
+    - name: Генерация постоянного ключа подписи (один раз)
+      if: steps.cache-keystore.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p ~/.android
+        keytool -genkeypair -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+
     - name: Сборка APK
       run: gradle assembleDebug
 

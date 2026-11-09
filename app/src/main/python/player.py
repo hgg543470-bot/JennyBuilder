@@ -59,26 +59,147 @@ _ACTIVE_APK_DL_EVENTS = {}
 _ACTIVE_APK_DL_RESULTS = {}
 
 
-def _sync_android_fg_guard(active: bool, percent: int, title: str, detail: str):
+_COMPLETED_JOBS_CACHE = {}
+_BG_BUILD_WATCHER_LOCK = _threading_boot.Lock()
+_BG_BUILD_WATCHER_ACTIVE = False
+
+
+def _sync_android_fg_guard(active: bool, percent: int, title: str, detail: str, cancellable: bool = False):
     global _FG_LAST_NOTIFY_TS, _FG_WAS_ACTIVE
     try:
         from com.chaquo.python import Python
         now = time.time()
         if active:
-            if (not _FG_WAS_ACTIVE) or (now - _FG_LAST_NOTIFY_TS >= 1.0) or percent >= 99:
+            if (not _FG_WAS_ACTIVE) or (now - _FG_LAST_NOTIFY_TS >= 0.45) or percent >= 99 or percent <= 3:
                 ctx = Python.getPlatform().getApplication()
                 from com.jenny.builder import PlaybackService
-                PlaybackService.updateBgTaskGuard(ctx, True, f"{title} ({percent}%)", str(detail or ""))
+                PlaybackService.updateBgTaskGuard(
+                    ctx, True, int(percent), str(title or "⚡ Выполнение"), str(detail or ""), bool(cancellable)
+                )
                 _FG_LAST_NOTIFY_TS = now
                 _FG_WAS_ACTIVE = True
         else:
             if _FG_WAS_ACTIVE:
                 ctx = Python.getPlatform().getApplication()
                 from com.jenny.builder import PlaybackService
-                PlaybackService.updateBgTaskGuard(ctx, False, "", "")
+                PlaybackService.updateBgTaskGuard(ctx, False, 100, "", "", False)
+                if detail:
+                    PlaybackService.syncStatusText(ctx, f"✅ {title}: {detail}" if title else str(detail), False)
                 _FG_WAS_ACTIVE = False
     except Exception:
         pass
+
+
+def _push_status_to_shade_from_py(msg: str, is_err: bool = False):
+    try:
+        from com.chaquo.python import Python
+        ctx = Python.getPlatform().getApplication()
+        from com.jenny.builder import PlaybackService
+        PlaybackService.syncStatusText(ctx, str(msg or ""), bool(is_err))
+    except Exception:
+        pass
+
+
+def refresh_shade_summary_from_gh():
+    try:
+        cfg = load_config()
+        runs_data = gh_api("actions/runs?per_page=5", "GET", token=cfg["token"], repo=cfg["repo"])
+        w_runs = runs_data.get("workflow_runs") or []
+        if not w_runs:
+            _push_status_to_shade_from_py(f"☁️ {cfg['repo']}: сборок пока нет", False)
+            return
+        top = w_runs[0]
+        bnum = top.get("run_number")
+        st = top.get("status")
+        conc = top.get("conclusion")
+        ttl = (top.get("display_title") or "")[:45]
+        nl = "\n"
+        if st != "completed":
+            _push_status_to_shade_from_py(f"🔨 Сборка #{bnum} идёт на GitHub ({st}){nl}• «{ttl}»", False)
+            ensure_bg_build_watcher()
+        elif conc == "success":
+            _push_status_to_shade_from_py(f"✅ Свежая на GitHub: Сборка #{bnum} — УСПЕШНО{nl}• «{ttl}»", False)
+        else:
+            _push_status_to_shade_from_py(f"❌ Сборка #{bnum} завершилась с ошибкой ({conc}){nl}• «{ttl}»", True)
+    except Exception as e:
+        _push_status_to_shade_from_py(f"⚠️ Ошибка связи с GitHub: {e}", True)
+
+
+def ensure_bg_build_watcher():
+    global _BG_BUILD_WATCHER_ACTIVE
+    with _BG_BUILD_WATCHER_LOCK:
+        if _BG_BUILD_WATCHER_ACTIVE:
+            return
+        _BG_BUILD_WATCHER_ACTIVE = True
+
+    def _watcher_loop():
+        global _BG_BUILD_WATCHER_ACTIVE
+        nl = "\n"
+        try:
+            for _ in range(240):
+                time.sleep(4.5)
+                if _TASK_PROGRESS.get("active"):
+                    continue
+                cfg = load_config()
+                if not cfg.get("token"):
+                    break
+                runs_data = gh_api("actions/runs?per_page=5", "GET", token=cfg["token"], repo=cfg["repo"])
+                w_runs = runs_data.get("workflow_runs") or []
+                if not w_runs:
+                    break
+                top = w_runs[0]
+                bnum = top.get("run_number")
+                run_id = top.get("id")
+                st = top.get("status")
+                conc = top.get("conclusion")
+                ttl = (top.get("display_title") or "")[:42]
+
+                if st == "completed":
+                    _sync_android_fg_guard(False, 100, "", "", False)
+                    if conc == "success":
+                        _push_status_to_shade_from_py(f"✅ Сборка #{bnum} готова к скачиванию!{nl}• «{ttl}»", False)
+                    else:
+                        _push_status_to_shade_from_py(f"❌ Ошибка в Сборке #{bnum} ({conc}){nl}• «{ttl}»", True)
+                    break
+
+                pct = 8
+                step_txt = "Ожидание раннера GitHub..." if st == "queued" else "Подготовка окружения..."
+                art_ready = False
+                try:
+                    j_data = gh_api(f"actions/runs/{run_id}/jobs", "GET", token=cfg["token"], repo=cfg["repo"])
+                    for jb in j_data.get("jobs", []):
+                        steps = jb.get("steps") or []
+                        tot_s = max(1, len(steps))
+                        done_s = sum(1 for s in steps if s.get("status") == "completed")
+                        pct = max(8, min(96, int((done_s * 100) / tot_s)))
+                        cur_s = next((s for s in steps if s.get("status") == "in_progress"), None)
+                        if cur_s:
+                            step_txt = f"Шаг {done_s + 1}/{tot_s}: {cur_s.get('name')}"
+                        elif done_s > 0:
+                            step_txt = f"Выполнено шагов: {done_s}/{tot_s}"
+                        for s in steps:
+                            sname = s.get("name") or ""
+                            if ("Выдача готового файла" in sname or "upload-artifact" in sname.lower()) and s.get("conclusion") == "success":
+                                art_ready = True
+                except Exception:
+                    pass
+
+                if art_ready:
+                    _sync_android_fg_guard(False, 100, "", "", False)
+                    _push_status_to_shade_from_py(f"⚡ Артефакт Сборки #{bnum} уже готов! Можно качать и ставить.{nl}• «{ttl}»", False)
+                    break
+
+                _sync_android_fg_guard(True, pct, f"🔨 GitHub Сборка #{bnum}", step_txt, False)
+        except Exception:
+            pass
+        finally:
+            if not _TASK_PROGRESS.get("active"):
+                _sync_android_fg_guard(False, 100, "", "", False)
+            with _BG_BUILD_WATCHER_LOCK:
+                _BG_BUILD_WATCHER_ACTIVE = False
+
+    t = _threading_boot.Thread(target=_watcher_loop, daemon=True)
+    t.start()
 
 
 def _is_valid_apk_file(path: str) -> bool:
@@ -353,6 +474,7 @@ def _discover_git_token(extra_dirs=None) -> str:
                     candidates.append(os.path.join(d, ".git", "config"))
                     candidates.append(os.path.join(os.path.dirname(d.rstrip("/")), ".git", "config"))
 
+    candidates.append(EXT_CONFIG_PATH)
     base_dirs = [
         "/storage/emulated/0/scripts/JennyPlayer",
         "/storage/emulated/0/scripts/JennyBuilder",
@@ -400,6 +522,7 @@ def _discover_git_token(extra_dirs=None) -> str:
 
 
 def _persist_cfg_to_disk(cfg: dict):
+    cfg["updated_ts"] = time.time()
     for p in _get_config_paths():
         try:
             parent = os.path.dirname(p)
@@ -420,24 +543,31 @@ def load_config() -> dict:
         "source_dir": DEFAULT_PROJECT_DIR,
         "browse_dir": DEFAULT_SAVE_DIR,
     }
-    if _MEM_CFG:
-        cfg.update(_MEM_CFG)
 
+    disk_records = []
     for p in _get_config_paths():
         try:
             if os.path.isfile(p):
+                st_mtime = os.path.getmtime(p)
                 saved = json.load(open(p, "r", encoding="utf-8"))
                 if isinstance(saved, dict):
-                    for k, v in saved.items():
-                        if v is not None and (v != "" or not cfg.get(k)):
-                            cfg[k] = v
+                    ts = float(saved.get("updated_ts") or st_mtime or 0.0)
+                    disk_records.append((ts, saved))
         except Exception:
             pass
 
-    if _MEM_CFG.get("token"):
-        cfg["token"] = _MEM_CFG["token"]
-    if _MEM_CFG.get("repo"):
-        cfg["repo"] = _MEM_CFG["repo"]
+    disk_records.sort(key=lambda x: x[0])
+    for _, saved in disk_records:
+        for k, v in saved.items():
+            if k == "updated_ts":
+                continue
+            if v is not None and (v != "" or not cfg.get(k)):
+                cfg[k] = v
+
+    if _MEM_CFG:
+        for k, v in _MEM_CFG.items():
+            if k != "updated_ts" and v is not None and v != "":
+                cfg[k] = v
 
     if not cfg.get("token"):
         discovered = _discover_git_token([cfg.get("source_dir"), cfg.get("browse_dir")])
@@ -448,6 +578,7 @@ def load_config() -> dict:
 
     _MEM_CFG.update(cfg)
     return dict(cfg)
+
 
 
 def save_config(new_data: dict) -> dict:
@@ -590,7 +721,8 @@ def gh_api(endpoint: str, method: str = "GET", payload: dict = None, token: str 
     url = endpoint if endpoint.startswith("http") else f"https://api.github.com/repos/{rep}/{endpoint.lstrip('/')}"
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "JennyBuilder-Android/1.7",
+        "User-Agent": "JennyBuilder-Android/2.3",
+        "Connection": "close",
     }
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
@@ -598,25 +730,36 @@ def gh_api(endpoint: str, method: str = "GET", payload: dict = None, token: str 
     if payload is not None:
         body = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json; charset=utf-8"
-    req = urllib.request.Request(url, data=body, headers=headers, method=method)
-    opener = urllib.request.build_opener(_NoAuthRedirectHandler())
-    try:
-        with opener.open(req, timeout=60) as resp:
-            raw = resp.read()
-            if not raw:
-                return {}
-            return json.loads(raw.decode("utf-8", errors="replace"))
-    except urllib.error.HTTPError as he:
-        err_body = ""
+
+    req_timeout = 15 if method == "GET" else 45
+    last_net_err = None
+    for attempt in range(2):
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        opener = urllib.request.build_opener(_NoAuthRedirectHandler())
         try:
-            err_body = he.read().decode("utf-8", errors="replace")[:300]
-        except Exception:
-            pass
-        if he.code in (401, 403) and not tok:
-            raise RuntimeError(
-                "Токен GitHub не задан или не прочитан из .git/config (разреши «Доступ ко всем файлам» или вставь токен в ⚙️ Настройки)."
-            )
-        raise RuntimeError(f"GitHub API HTTP {he.code}: {he.reason} {err_body}".strip())
+            with opener.open(req, timeout=req_timeout) as resp:
+                raw = resp.read()
+                if not raw:
+                    return {}
+                return json.loads(raw.decode("utf-8", errors="replace"))
+        except urllib.error.HTTPError as he:
+            err_body = ""
+            try:
+                err_body = he.read().decode("utf-8", errors="replace")[:260]
+            except Exception:
+                pass
+            if he.code == 401:
+                raise RuntimeError("HTTP 401: Токен GitHub недействителен или отозван. Открой ⚙️ Настройки и обнови токен!")
+            if he.code == 403 and ("rate limit" in err_body.lower() or not tok):
+                raise RuntimeError("HTTP 403: Не прочитан токен GitHub (выдай «Доступ ко всем файлам» вверху или проверь ⚙️ Настройки)!")
+            raise RuntimeError(f"GitHub API HTTP {he.code}: {he.reason} {err_body}".strip())
+        except Exception as net_e:
+            last_net_err = net_e
+            if attempt == 0:
+                time.sleep(0.5)
+                continue
+    raise RuntimeError(f"Сбой сети до api.github.com ({last_net_err}). Проверь Wi-Fi / VPN.")
+
 
 
 # ==============================================================================
@@ -2367,6 +2510,8 @@ class BuilderHandler(BaseHTTPRequestHandler):
                         latest_good_summary = item_dict
 
                 _CACHED_RUNS_LIST = runs_list
+                if runs_list and runs_list[0].get('status') != 'completed':
+                    ensure_bg_build_watcher()
 
                 target_run_id = qs.get("run_id", [""])[0]
                 if not target_run_id and runs_list:
@@ -2380,7 +2525,12 @@ class BuilderHandler(BaseHTTPRequestHandler):
 
                 active_details = None
                 if target_run_id:
-                    jobs_data = gh_api(f"actions/runs/{target_run_id}/jobs", "GET", token=cfg["token"], repo=cfg["repo"])
+                    if selected_run_meta and selected_run_meta.get("status") == "completed" and target_run_id in _COMPLETED_JOBS_CACHE:
+                        jobs_data = _COMPLETED_JOBS_CACHE[target_run_id]
+                    else:
+                        jobs_data = gh_api(f"actions/runs/{target_run_id}/jobs", "GET", token=cfg["token"], repo=cfg["repo"])
+                        if selected_run_meta and selected_run_meta.get("status") == "completed":
+                            _COMPLETED_JOBS_CACHE[target_run_id] = jobs_data
                     steps_out = []
                     failed_job_id = None
                     failed_step_info = None

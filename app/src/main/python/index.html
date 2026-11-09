@@ -268,21 +268,25 @@
 </div>
 
 <!-- БАННЕР РАЗРЕШЕНИЯ ДОСТУПА К ФАЙЛАМ ANDROID 11-16 -->
-<div id="permBanner" class="perm-banner">
-  <div style="font-weight:bold;color:#ffa198;font-size:12px;margin-bottom:6px;">
-    ⚠️ Нет доступа к файлам Android (MANAGE_EXTERNAL_STORAGE)
+<!-- ЦЕНТР РАЗРЕШЕНИЙ ANDROID 16 / XIAOMI HYPEROS -->
+<div id="permBanner" class="perm-banner" style="background:linear-gradient(180deg,#251324 0%,#161b22 100%);border-color:#ff7b72;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+    <b style="color:#ffa198;font-size:12px;">🛡️ РАЗРЕШЕНИЯ ANDROID 16 / HYPEROS ДЛЯ ФОНА И ШТОРКИ:</b>
+    <button class="btn" style="width:auto;padding:2px 7px;font-size:10px;" onclick="document.getElementById('permBanner').style.display='none'">Скрыть</button>
   </div>
-  <div style="font-size:11px;color:#e6edf3;margin-bottom:8px;">
-    В HyperOS / MIUI этот тумблер спрятан в «Специальном доступе». Нажми кнопку ниже — откроется прямое системное окно тумблера для Jenny Builder:
+  <div style="font-size:10.5px;color:#c9d1d9;margin-bottom:8px;line-height:1.35;">
+    Выдай недостающие пункты — шторка будет выводить живой <b>% закачек и строку состояния</b>, а HyperOS не будет ставить сеть и фоновый сервер на паузу:
   </div>
-  <button class="btn btn-red" onclick="requestAndroidStoragePerm()">
-    🔓 Выдать доступ ко всем файлам
-  </button>
+  <div id="permRowsContainerV23" style="display:flex;flex-direction:column;gap:5px;margin-bottom:8px;"></div>
+  <div class="grid2">
+    <button class="btn btn-green" onclick="requestNextMissingPermV23()">⚡ Выдать следующее право</button>
+    <button class="btn btn-purple" id="btnHyperOsPowerV23" onclick="openXiaomiHyperOsPowerV23()">⚡ HyperOS: Контроль активности</button>
+  </div>
 </div>
 
 <div class="card" id="topHeaderCard">
   <div class="card-title">
-    <span>🛠️ JENNY BUILDER v2.2 (DOCTOR)</span>
+    <span>🛠️ JENNY BUILDER v2.3 (HYPEROS • SHADE)</span>
     <button class="btn" style="width:auto;padding:4px 8px;font-size:11px;" onclick="toggleSettings()">⚙️ Настройки</button>
   </div>
   <div id="settingsArea" style="display:none;margin-top:6px;border-top:1px solid #30363d;padding-top:8px;">
@@ -301,14 +305,22 @@
       <button class="btn btn-blue" onclick="saveSettings()">💾 Сохранить настройки</button>
       <button class="btn btn-purple" onclick="rediscoverGitToken()">🔍 Найти в .git/config</button>
     </div>
-    <button class="btn" style="font-size:11px;padding:6px;" onclick="requestAndroidStoragePerm()">
-      🔓 Открыть системный тумблер «Доступ ко всем файлам»
+    <div class="grid2" style="margin-bottom:6px;">
+      <button class="btn btn-cyan" style="font-size:11px;padding:6px;" onclick="openPermCenterManualV23()">
+        🛡️ Права Android 16 / Батарея
+      </button>
+      <button class="btn btn-green" style="font-size:11px;padding:6px;" onclick="enableShadeManualV23()">
+        🔔 Включить шторку статуса
+      </button>
+    </div>
+    <button class="btn" style="font-size:11px;padding:6px;" onclick="openXiaomiHyperOsPowerV23()">
+      ⚡ Xiaomi HyperOS: открыть «Контроль активности (Нет ограничений)»
     </button>
   </div>
   <div style="font-size:11px;color:#8b949e;line-height:1.5;">
     Репо: <b id="lblRepo" style="color:#fff;">...</b> |
     Токен: <b id="lblTokenState" style="color:#3fb950;">...</b> |
-    Файлы: <b id="lblStoragePerm" style="color:#3fb950;" onclick="requestAndroidStoragePerm()">...</b>
+    Файлы: <b id="lblStoragePerm" style="color:#3fb950;cursor:pointer;" onclick="openPermCenterManualV23()">...</b> | Шторка: <b id="lblShadePermV23" style="color:#3fb950;cursor:pointer;" onclick="enableShadeManualV23()">...</b> | Фон: <b id="lblBatPermV23" style="color:#3fb950;cursor:pointer;" onclick="openPermCenterManualV23()">...</b>
   </div>
 
   <!-- БЛОК ОПРЕДЕЛЕНИЯ УСТАНОВЛЕННОЙ НА ТЕЛЕФОНЕ ВЕРСИИ -->
@@ -1403,6 +1415,7 @@ function requestAndroidStoragePerm() {
 
 window.onOnboardingPermUpdatedV165 = function(kind, granted) {
   checkAndroidStorageState();
+  syncAllAndroidPermsV23(false);
   if (granted) {
     showStatus('✅ Доступ к файлам получен! Подхватываю токен из .git/config...', false);
     rediscoverGitToken();
@@ -1417,6 +1430,9 @@ window.syncOnboardingPermsV165 = function() {
   }
 };
 
+let _lastShadeSyncMsgV23 = '';
+let _lastShadeSyncTsV23 = 0;
+
 function showStatus(msg, isErr) {
   const b = document.getElementById('actionStatusBox');
   b.style.display = 'block';
@@ -1426,6 +1442,16 @@ function showStatus(msg, isErr) {
   if (isErr && msg.indexOf('Доступ ко всем файлам') !== -1) {
     checkAndroidStorageState();
   }
+  try {
+    const now = Date.now();
+    if (!progressPollTimer && window.AndroidBridge && typeof window.AndroidBridge.updateShadeStatus === 'function') {
+      if (msg !== _lastShadeSyncMsgV23 || (now - _lastShadeSyncTsV23) > 1500) {
+        _lastShadeSyncMsgV23 = msg;
+        _lastShadeSyncTsV23 = now;
+        window.AndroidBridge.updateShadeStatus(String(msg || ''), Boolean(isErr));
+      }
+    }
+  } catch (e) {}
 }
 
 function toggleSettings() {
@@ -2488,7 +2514,13 @@ async function loadRuns(isManual, fromSelectRun) {
       }
       if (!wasOfflineRuns || isManual || fromSelectRun) {
         wasOfflineRuns = true;
-        showStatus('⚠️ Нет подключения к GitHub — показан сохранённый список сборок.', true);
+        const errDetail = (d && d.error) ? String(d.error) : 'нет ответа от api.github.com';
+        if (errDetail.indexOf('401') !== -1) {
+          document.getElementById('lblTokenState').textContent = 'Ошибка 401 ❌';
+          document.getElementById('lblTokenState').style.color = '#ff7b72';
+          updateCompactTopBarUi();
+        }
+        showStatus('⚠️ ' + errDetail + '\n• Показан сохранённый список сборок.', true);
       }
       return;
     }
@@ -2947,8 +2979,158 @@ function copyDoctorReport() {
   showStatus('📋 Отчёт Ревизора скопирован!', false);
 }
 
+
+let lastPermsStateV23 = { storage: true, notif: true, battery: true, install: true, isXiaomi: true };
+let autoPromptChainBusyV23 = false;
+
+function syncAllAndroidPermsV23(fromGrantCallback) {
+  let p = { storage: true, notif: true, battery: true, install: true, isXiaomi: true };
+  try {
+    if (window.AndroidBridge && typeof window.AndroidBridge.getAllPermissionsJson === 'function') {
+      const raw = window.AndroidBridge.getAllPermissionsJson();
+      if (raw) p = Object.assign(p, JSON.parse(raw));
+    }
+  } catch (e) {}
+  lastPermsStateV23 = p;
+
+  const lblSt = document.getElementById('lblStoragePerm');
+  if (lblSt) {
+    lblSt.textContent = p.storage ? '✅' : '❌ Выдать';
+    lblSt.style.color = p.storage ? '#3fb950' : '#ff7b72';
+  }
+  const lblSh = document.getElementById('lblShadePermV23');
+  if (lblSh) {
+    lblSh.textContent = p.notif ? 'Активна ✅' : 'Выкл ❌';
+    lblSh.style.color = p.notif ? '#3fb950' : '#ff7b72';
+  }
+  const lblBt = document.getElementById('lblBatPermV23');
+  if (lblBt) {
+    lblBt.textContent = p.battery ? 'DataSync ✅' : 'Лимит ⚠️';
+    lblBt.style.color = p.battery ? '#3fb950' : '#e3b341';
+  }
+
+  const rowsBox = document.getElementById('permRowsContainerV23');
+  const banner = document.getElementById('permBanner');
+  const allGranted = Boolean(p.storage && p.notif && p.battery && p.install);
+
+  if (rowsBox) {
+    const mkRow = (ok, icon, title, sub, btnTxt, fnCall) => {
+      const badge = ok
+        ? '<span style="color:#7ee787;font-weight:bold;font-size:11px;flex-shrink:0;">✅ Выдано</span>'
+        : '<button class="btn btn-red" style="width:auto;padding:5px 9px;font-size:10.5px;flex-shrink:0;" onclick="' + fnCall + '">' + btnTxt + '</button>';
+      return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 8px;background:#090d13;border:1px solid ' + (ok ? '#233829' : '#4a2226') + ';border-radius:8px;">' +
+        '<div style="min-width:0;flex:1;"><div style="font-size:11.5px;font-weight:700;color:' + (ok ? '#e6edf3' : '#ffa198') + ';">' + icon + ' ' + title + '</div>' +
+        '<div style="font-size:10px;color:#8b949e;">' + sub + '</div></div>' + badge + '</div>';
+    };
+
+    rowsBox.innerHTML =
+      mkRow(p.storage, '📁', 'Доступ ко всем файлам', 'Чтение/запись рабочих папок, конфига и .apk', '🔓 Выдать', 'requestAndroidStoragePerm()') +
+      mkRow(p.notif, '🔔', 'Шторка уведомлений (Android 13–16)', 'Живой % закачек, статус и кнопки в шторке', '🔔 Разрешить', 'requestNotifPermV23()') +
+      mkRow(p.battery, '🔋', 'Снять ограничение батареи (Doze)', 'DataSync сервис не замирает при сворачивании', '🔋 Снять лимит', 'requestBatteryPermV23()') +
+      mkRow(p.install, '📲', 'Установка собранных APK', 'Прямой запуск MT-установщика из билдера', '📲 Разрешить', 'requestInstallPermV23()');
+  }
+
+  if (banner && !banner._manualOpenV23) {
+    banner.style.display = allGranted ? 'none' : 'block';
+  } else if (banner && allGranted) {
+    banner._manualOpenV23 = false;
+    banner.style.display = 'none';
+  }
+
+  if (fromGrantCallback) {
+    if (allGranted) {
+      showStatus('✅ Все 4 системных разрешения Android 16 / HyperOS активны! Фоновый DataSync и шторка работают без ограничений.', false);
+    } else {
+      autoStepMissingPermsOnBootV23();
+    }
+  }
+  return allGranted;
+}
+
+function autoStepMissingPermsOnBootV23() {
+  if (autoPromptChainBusyV23) return;
+  if (!lastPermsStateV23.storage) return; // Доступ к файлам запрашивает MainActivity на старте
+  if (!lastPermsStateV23.notif && !sessionStorage.getItem('jb_asked_notif_v23')) {
+    sessionStorage.setItem('jb_asked_notif_v23', '1');
+    autoPromptChainBusyV23 = true;
+    setTimeout(() => { autoPromptChainBusyV23 = false; requestNotifPermV23(); }, 650);
+    return;
+  }
+  if (lastPermsStateV23.notif && !lastPermsStateV23.battery && !sessionStorage.getItem('jb_asked_bat_v23')) {
+    sessionStorage.setItem('jb_asked_bat_v23', '1');
+    autoPromptChainBusyV23 = true;
+    setTimeout(() => { autoPromptChainBusyV23 = false; requestBatteryPermV23(); }, 650);
+  }
+}
+
+function openPermCenterManualV23() {
+  syncAllAndroidPermsV23(false);
+  const banner = document.getElementById('permBanner');
+  if (banner) {
+    banner._manualOpenV23 = true;
+    banner.style.display = 'block';
+    window.scrollTo({top: 0, behavior: 'smooth'});
+  }
+}
+
+function enableShadeManualV23() {
+  try {
+    if (window.AndroidBridge && typeof window.AndroidBridge.setLiveShadeVisible === 'function') {
+      window.AndroidBridge.setLiveShadeVisible(true);
+      showStatus('🔔 Живая шторка состояния и закачек включена!', false);
+    }
+  } catch (e) {}
+}
+
+function requestNotifPermV23() {
+  try {
+    if (window.AndroidBridge && typeof window.AndroidBridge.requestNotificationPermission === 'function') {
+      window.AndroidBridge.requestNotificationPermission();
+    }
+  } catch (e) {}
+}
+
+function requestBatteryPermV23() {
+  try {
+    if (window.AndroidBridge && typeof window.AndroidBridge.requestIgnoreBatteryOptimizations === 'function') {
+      window.AndroidBridge.requestIgnoreBatteryOptimizations();
+    }
+  } catch (e) {}
+}
+
+function requestInstallPermV23() {
+  try {
+    if (window.AndroidBridge && typeof window.AndroidBridge.requestInstallPermissionOnly === 'function') {
+      window.AndroidBridge.requestInstallPermissionOnly();
+    }
+  } catch (e) {}
+}
+
+function openXiaomiHyperOsPowerV23() {
+  try {
+    if (window.AndroidBridge && typeof window.AndroidBridge.openXiaomiBatterySettings === 'function') {
+      window.AndroidBridge.openXiaomiBatterySettings();
+    }
+  } catch (e) {}
+}
+
+function requestNextMissingPermV23() {
+  syncAllAndroidPermsV23(false);
+  if (!lastPermsStateV23.storage) { requestAndroidStoragePerm(); return; }
+  if (!lastPermsStateV23.notif) { requestNotifPermV23(); return; }
+  if (!lastPermsStateV23.battery) { requestBatteryPermV23(); return; }
+  if (!lastPermsStateV23.install) { requestInstallPermV23(); return; }
+  showStatus('✅ Все необходимые права уже выданы!', false);
+}
+
+window.onShadeCancelTriggeredV23 = function() {
+  stopProgressPolling();
+  showStatus('⏹ Загрузка остановлена из шторки уведомлений. Временные файлы удалены.', true);
+};
+
 initApp();
-setInterval(loadRuns, 4500);
+setTimeout(autoStepMissingPermsOnBootV23, 1400);
+setInterval(loadRuns, 5000);
 </script>
 </body>
 </html>

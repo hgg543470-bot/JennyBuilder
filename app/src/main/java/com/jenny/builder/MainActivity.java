@@ -72,6 +72,52 @@ public class MainActivity extends AppCompatActivity {
     private static int storageWatchTicksV165 = 0;
     private static Runnable notifWatchRunnableV165 = null;
     private static int notifWatchTicksV165 = 0;
+    private static Runnable batteryWatchRunnableV23 = null;
+    private static int batteryWatchTicksV23 = 0;
+
+    private boolean isIgnoringBatteryOptInternalV23() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                android.os.PowerManager pm = (android.os.PowerManager) getSystemService(android.content.Context.POWER_SERVICE);
+                if (pm != null) {
+                    return pm.isIgnoringBatteryOptimizations(getPackageName());
+                }
+            } catch (Exception ignored) {}
+        }
+        return true;
+    }
+
+    private boolean isXiaomiHyperOsDeviceV23() {
+        String m = (Build.MANUFACTURER != null ? Build.MANUFACTURER : "").toLowerCase();
+        String b = (Build.BRAND != null ? Build.BRAND : "").toLowerCase();
+        return m.contains("xiaomi") || m.contains("poco") || m.contains("redmi") || b.contains("xiaomi") || b.contains("poco") || b.contains("redmi");
+    }
+
+    private void startBatteryGrantRadarV23() {
+        if (batteryWatchRunnableV23 != null) {
+            permWatchHandlerV147.removeCallbacks(batteryWatchRunnableV23);
+        }
+        batteryWatchTicksV23 = 0;
+        batteryWatchRunnableV23 = new Runnable() {
+            @Override
+            public void run() {
+                batteryWatchTicksV23++;
+                if (isIgnoringBatteryOptInternalV23()) {
+                    permWatchHandlerV147.removeCallbacks(this);
+                    batteryWatchRunnableV23 = null;
+                    isOpeningSettingsV146 = false;
+                    evalJs("if(window.syncAllAndroidPermsV23) window.syncAllAndroidPermsV23(true);");
+                    return;
+                }
+                if (batteryWatchTicksV23 < 350) {
+                    permWatchHandlerV147.postDelayed(this, 180);
+                } else {
+                    isOpeningSettingsV146 = false;
+                }
+            }
+        };
+        permWatchHandlerV147.postDelayed(batteryWatchRunnableV23, 180);
+    }
     private static boolean isOpeningSettingsV146 = false;
     private static int savedOverlayW = 0;
     private static int savedOverlayH = 0;
@@ -771,7 +817,9 @@ public class MainActivity extends AppCompatActivity {
                     try {
                         finishActivity(REQ_PERM_NOTIF);
                     } catch (Exception ignored) {}
-                    evalJs("if(window.onOnboardingPermUpdatedV165) window.onOnboardingPermUpdatedV165('notif', true);");
+                    PlaybackService.setShadeVisible(MainActivity.this, true);
+                    PlaybackService.syncStatusText(MainActivity.this, "🟢 Шторка уведомлений активна! Закачки и статус работают в фоне.", false);
+                    evalJs("if(window.onOnboardingPermUpdatedV165) window.onOnboardingPermUpdatedV165('notif', true); if(window.syncAllAndroidPermsV23) window.syncAllAndroidPermsV23(true);");
                     return;
                 }
                 if (notifWatchTicksV165 < 400) {
@@ -1114,6 +1162,115 @@ public class MainActivity extends AppCompatActivity {
 
     public class WebAppInterface {
         @JavascriptInterface
+        public String getAllPermissionsJson() {
+            try {
+                JSONObject obj = new JSONObject();
+                obj.put("storage", hasStoragePermissionInternalV165());
+                obj.put("notif", hasNotificationPermissionInternalV165());
+                obj.put("battery", isIgnoringBatteryOptInternalV23());
+                obj.put("install", canInstallApksInternalV170());
+                obj.put("isXiaomi", isXiaomiHyperOsDeviceV23());
+                obj.put("sdkInt", Build.VERSION.SDK_INT);
+                return obj.toString();
+            } catch (Exception e) {
+                return "{}";
+            }
+        }
+
+        @JavascriptInterface
+        public boolean isIgnoringBatteryOptimizations() {
+            return isIgnoringBatteryOptInternalV23();
+        }
+
+        @JavascriptInterface
+        public void requestIgnoreBatteryOptimizations() {
+            runOnUiThread(() -> {
+                try {
+                    if (isIgnoringBatteryOptInternalV23()) {
+                        evalJs("if(window.syncAllAndroidPermsV23) window.syncAllAndroidPermsV23(true);");
+                        return;
+                    }
+                    isOpeningSettingsV146 = true;
+                    startBatteryGrantRadarV23();
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        try {
+                            Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                            intent.setData(Uri.parse("package:" + getPackageName()));
+                            startActivity(intent);
+                        } catch (Exception e1) {
+                            Intent intent2 = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+                            startActivity(intent2);
+                        }
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void openXiaomiBatterySettings() {
+            runOnUiThread(() -> {
+                try {
+                    isOpeningSettingsV146 = true;
+                    Intent miuiIntent = new Intent();
+                    miuiIntent.setClassName("com.miui.powerkeeper", "com.miui.powerkeeper.ui.HiddenAppsConfigActivity");
+                    miuiIntent.putExtra("package_name", getPackageName());
+                    miuiIntent.putExtra("package_label", "Jenny Builder");
+                    startActivity(miuiIntent);
+                    android.widget.Toast.makeText(getApplicationContext(), "⚡ Выбери «Нет ограничений» для работы в фоне", android.widget.Toast.LENGTH_LONG).show();
+                } catch (Exception e1) {
+                    try {
+                        Intent appDet = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()));
+                        startActivity(appDet);
+                    } catch (Exception ignored) {}
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void requestInstallPermissionOnly() {
+            runOnUiThread(() -> {
+                try {
+                    if (canInstallApksInternalV170()) {
+                        evalJs("if(window.syncAllAndroidPermsV23) window.syncAllAndroidPermsV23(true);");
+                        return;
+                    }
+                    pendingInstallApkPathV170 = null;
+                    isOpeningSettingsV146 = true;
+                    startInstallPermRadarV170();
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        Intent intent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName()));
+                        startActivityForResult(intent, REQ_INSTALL_PERM);
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void updateShadeStatus(final String statusText, final boolean isErr) {
+            try {
+                if (hasNotificationPermissionInternalV165()) {
+                    PlaybackService.syncStatusText(MainActivity.this, statusText, isErr);
+                }
+            } catch (Exception ignored) {}
+        }
+
+        @JavascriptInterface
+        public void setLiveShadeVisible(final boolean visible) {
+            runOnUiThread(() -> {
+                try {
+                    if (visible && !hasNotificationPermissionInternalV165()) {
+                        requestNotificationPermission();
+                        return;
+                    }
+                    PlaybackService.setShadeVisible(MainActivity.this, visible);
+                } catch (Exception ignored) {}
+            });
+        }
+        @JavascriptInterface
         public void setKeyboardAllowed(final boolean allowed) {
             applyKeyboardLockStateV22(allowed);
         }
@@ -1339,7 +1496,9 @@ public class MainActivity extends AppCompatActivity {
                 try {
                     PlaybackService.ensureChannel(MainActivity.this);
                     if (hasNotificationPermissionInternalV165()) {
-                        evalJs("if(window.onOnboardingPermUpdatedV165) window.onOnboardingPermUpdatedV165('notif', true);");
+                        PlaybackService.setShadeVisible(MainActivity.this, true);
+                    PlaybackService.syncStatusText(MainActivity.this, "🟢 Шторка уведомлений активна! Закачки и статус работают в фоне.", false);
+                    evalJs("if(window.onOnboardingPermUpdatedV165) window.onOnboardingPermUpdatedV165('notif', true); if(window.syncAllAndroidPermsV23) window.syncAllAndroidPermsV23(true);");
                         return;
                     }
                     startNotifGrantRadarV165();
@@ -1600,7 +1759,9 @@ public class MainActivity extends AppCompatActivity {
             boolean ok = hasNotificationPermissionInternalV165();
             if (ok) {
                 stopNotifGrantRadarV165();
-                evalJs("if(window.onOnboardingPermUpdatedV165) window.onOnboardingPermUpdatedV165('notif', true);");
+                PlaybackService.setShadeVisible(MainActivity.this, true);
+                    PlaybackService.syncStatusText(MainActivity.this, "🟢 Шторка уведомлений активна! Закачки и статус работают в фоне.", false);
+                    evalJs("if(window.onOnboardingPermUpdatedV165) window.onOnboardingPermUpdatedV165('notif', true); if(window.syncAllAndroidPermsV23) window.syncAllAndroidPermsV23(true);");
             } else if (!ActivityCompat.shouldShowRequestPermissionRationale(this, "android.permission.POST_NOTIFICATIONS")) {
                 // Если Android заблокировал стандартный диалог — открываем системное окно уведомлений нашего приложения
                 try {
@@ -1617,6 +1778,9 @@ public class MainActivity extends AppCompatActivity {
 
     private void checkPermissionsAndStart() {
         startPythonServer();
+        if (hasNotificationPermissionInternalV165()) {
+            PlaybackService.syncStatusText(this, "🟢 Jenny Builder запущен и готов к работе.", false);
+        }
         if (!hasStoragePermissionInternalV165() && !autoAskedStorageOnceV166) {
             autoAskedStorageOnceV166 = true;
             permWatchHandlerV147.postDelayed(() -> {
@@ -1712,7 +1876,7 @@ public class MainActivity extends AppCompatActivity {
                 if (wasPermSettings) {
                     evalJs("if(window.onReturnedFromPermissionScreenV146) window.onReturnedFromPermissionScreenV146(" + granted + ");");
                 }
-                evalJs("if(window.syncOnboardingPermsV165) window.syncOnboardingPermsV165();");
+                evalJs("if(window.syncOnboardingPermsV165) window.syncOnboardingPermsV165(); if(window.syncAllAndroidPermsV23) window.syncAllAndroidPermsV23(false);");
                 if (isVideoFullscreenV132 || isVideoLockedV132) {
                     applyVideoSystemUiLockV132();
                 }
