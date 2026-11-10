@@ -49,6 +49,7 @@ public class MainActivity extends AppCompatActivity {
     private static Runnable uninstallWatchRunnableV170 = null;
     private static int uninstallWatchTicksV170 = 0;
     private static MainActivity instance;
+    public static volatile boolean isAppInForegroundV24 = false;
     private static WebView webView;
     private static volatile boolean allowKeyboardEditV22 = false;
     private static boolean isPageLoaded = false;
@@ -869,7 +870,7 @@ public class MainActivity extends AppCompatActivity {
                         } catch (Exception ignored) {}
                     } else {
                         // Запрос был открыт сразу при старте видео или со стартового гида — закрываем SubSettings и уведомляем UI!
-                        evalJs("if(window.onReturnedFromPermissionScreenV146) window.onReturnedFromPermissionScreenV146(true); if(window.onOnboardingPermUpdatedV165) window.onOnboardingPermUpdatedV165('overlay', true);");
+                        evalJs("if(window.onReturnedFromPermissionScreenV146) window.onReturnedFromPermissionScreenV146(true); if(window.onOnboardingPermUpdatedV165) window.onOnboardingPermUpdatedV165('overlay', true); if(window.syncAllAndroidPermsV23) window.syncAllAndroidPermsV23(true);");
                     }
                     return;
                 }
@@ -1169,6 +1170,7 @@ public class MainActivity extends AppCompatActivity {
                 obj.put("notif", hasNotificationPermissionInternalV165());
                 obj.put("battery", isIgnoringBatteryOptInternalV23());
                 obj.put("install", canInstallApksInternalV170());
+                obj.put("overlay", canDrawOverlays());
                 obj.put("isXiaomi", isXiaomiHyperOsDeviceV23());
                 obj.put("sdkInt", Build.VERSION.SDK_INT);
                 return obj.toString();
@@ -1806,8 +1808,15 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onPause() {
+        isAppInForegroundV24 = false;
+        super.onPause();
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
+        isAppInForegroundV24 = true;
         if (pendingUninstallPkgV170 != null && !pendingUninstallPkgV170.isEmpty()) {
             boolean stillHere = true;
             try {

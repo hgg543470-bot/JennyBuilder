@@ -286,7 +286,7 @@
 
 <div class="card" id="topHeaderCard">
   <div class="card-title">
-    <span>🛠️ JENNY BUILDER v2.3 (HYPEROS • SHADE)</span>
+    <span>🛠️ JENNY BUILDER v2.4 (OVERLAY • SHADE)</span>
     <button class="btn" style="width:auto;padding:4px 8px;font-size:11px;" onclick="toggleSettings()">⚙️ Настройки</button>
   </div>
   <div id="settingsArea" style="display:none;margin-top:6px;border-top:1px solid #30363d;padding-top:8px;">
@@ -320,7 +320,7 @@
   <div style="font-size:11px;color:#8b949e;line-height:1.5;">
     Репо: <b id="lblRepo" style="color:#fff;">...</b> |
     Токен: <b id="lblTokenState" style="color:#3fb950;">...</b> |
-    Файлы: <b id="lblStoragePerm" style="color:#3fb950;cursor:pointer;" onclick="openPermCenterManualV23()">...</b> | Шторка: <b id="lblShadePermV23" style="color:#3fb950;cursor:pointer;" onclick="enableShadeManualV23()">...</b> | Фон: <b id="lblBatPermV23" style="color:#3fb950;cursor:pointer;" onclick="openPermCenterManualV23()">...</b>
+    Файлы: <b id="lblStoragePerm" style="color:#3fb950;cursor:pointer;" onclick="openPermCenterManualV23()">...</b> | Шторка: <b id="lblShadePermV23" style="color:#3fb950;cursor:pointer;" onclick="enableShadeManualV23()">...</b> | Фон: <b id="lblBatPermV23" style="color:#3fb950;cursor:pointer;" onclick="openPermCenterManualV23()">...</b> | Поверх: <b id="lblOverlayPermV24" style="color:#3fb950;cursor:pointer;" onclick="requestOverlayPermV24()">...</b>
   </div>
 
   <!-- БЛОК ОПРЕДЕЛЕНИЯ УСТАНОВЛЕННОЙ НА ТЕЛЕФОНЕ ВЕРСИИ -->
@@ -546,6 +546,13 @@
 
   <div style="font-size:11px;color:#8b949e;margin:8px 0 4px 0;">
     История сборок (нажми «📲 Установить», чтобы скачать в 32 потока и сразу открыть установщик):
+  </div>
+  <div style="display:flex;align-items:center;gap:6px;background:#101c16;border:1px solid #3fb950;padding:8px 10px;border-radius:9px;margin:6px 0;">
+    <label style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;font-size:11.5px;color:#e6edf3;cursor:pointer;user-select:none;">
+      <input type="checkbox" id="chkAutoPopupApk" checked onchange="toggleAutoPopupApkV24(this.checked)" style="width:17px;height:17px;accent-color:#3fb950;flex-shrink:0;">
+      <span>🚀 <b>Авто-качать готовую сборку и СУВАТЬ УСТАНОВКУ ПОВЕРХ ВСЕХ ОКОН</b> <span style="color:#8b949e;">(сразу поверх видео/игр/Termux)</span></span>
+    </label>
+    <button class="btn btn-green" style="width:auto;padding:5px 8px;font-size:10.5px;flex-shrink:0;" onclick="testNativeOverlayV24()">🧪 Тест</button>
   </div>
   <label id="lblSkipSoLibs" style="display:flex;align-items:center;gap:8px;background:#0d141d;border:1px solid #39c5cf;padding:8px 10px;border-radius:9px;margin:6px 0 8px 0;font-size:11.5px;color:#e6edf3;cursor:pointer;user-select:none;">
     <input type="checkbox" id="chkSkipSoLibs" onchange="localStorage.setItem('jb_skip_so_zip', this.checked ? '1' : '0');showStatus(this.checked ? '🪶 Включен режим: скачивать .zip БЕЗ тяжелых бинарников .so (оставить все исходники .go/.cpp/.c/.h + паспорт .so)' : '📦 Включен режим: скачивать ПОЛНЫЙ .zip архив (все исходники + скомпилированные .so)', false);" style="width:17px;height:17px;accent-color:#39c5cf;flex-shrink:0;">
@@ -1489,6 +1496,8 @@ function applyConfigToUi(c) {
   document.getElementById('saveDirInput').value = c.save_dir || '/storage/emulated/0/Download';
   document.getElementById('sourceFolderInput').value = c.source_dir || '/storage/emulated/0/scripts/JennyPlayer';
   currentBrowseDir = c.browse_dir || c.save_dir || '/storage/emulated/0/Download';
+  const chkAp = document.getElementById('chkAutoPopupApk');
+  if (chkAp) chkAp.checked = (c.auto_popup_apk !== false);
   updateButtonLabels();
   if (typeof renderRepoTemplates === 'function') renderRepoTemplates();
 }
@@ -2254,7 +2263,7 @@ async function downloadRunApk(runId, runNum, autoInstallAfter, forceRedownload) 
     const r = await fetch('/api/download_apk', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({run_id: runId, run_number: runNum, save_dir: sd, force_redownload: Boolean(forceRedownload)})
+      body: JSON.stringify({run_id: runId, run_number: runNum, save_dir: sd, force_redownload: Boolean(forceRedownload), auto_install: Boolean(autoInstallAfter)})
     });
     const d = await r.json();
     stopProgressPolling();
@@ -2265,7 +2274,7 @@ async function downloadRunApk(runId, runNum, autoInstallAfter, forceRedownload) 
       } else {
         showStatus('✅ Готовый APK #' + runNum + ' скачан в 32 потока!\n• Файл: ' + d.apk_path + ' (' + d.size_mb + ' МБ)', false);
       }
-      if (autoInstallAfter) {
+      if (autoInstallAfter && !d.overlay_shown) {
         openMtInstallerForApk(d.apk_path, '', { runId: runId, runNum: runNum });
       }
     } else if (d.status === 'cancelled') {
@@ -2980,11 +2989,11 @@ function copyDoctorReport() {
 }
 
 
-let lastPermsStateV23 = { storage: true, notif: true, battery: true, install: true, isXiaomi: true };
+let lastPermsStateV23 = { storage: true, notif: true, battery: true, install: true, overlay: true, isXiaomi: true };
 let autoPromptChainBusyV23 = false;
 
 function syncAllAndroidPermsV23(fromGrantCallback) {
-  let p = { storage: true, notif: true, battery: true, install: true, isXiaomi: true };
+  let p = { storage: true, notif: true, battery: true, install: true, overlay: true, isXiaomi: true };
   try {
     if (window.AndroidBridge && typeof window.AndroidBridge.getAllPermissionsJson === 'function') {
       const raw = window.AndroidBridge.getAllPermissionsJson();
@@ -3011,7 +3020,12 @@ function syncAllAndroidPermsV23(fromGrantCallback) {
 
   const rowsBox = document.getElementById('permRowsContainerV23');
   const banner = document.getElementById('permBanner');
-  const allGranted = Boolean(p.storage && p.notif && p.battery && p.install);
+  const lblOv = document.getElementById('lblOverlayPermV24');
+  if (lblOv) {
+    lblOv.textContent = p.overlay ? '✅' : '❌ Выдать';
+    lblOv.style.color = p.overlay ? '#3fb950' : '#ff7b72';
+  }
+  const allGranted = Boolean(p.storage && p.notif && p.battery && p.install && p.overlay);
 
   if (rowsBox) {
     const mkRow = (ok, icon, title, sub, btnTxt, fnCall) => {
@@ -3027,7 +3041,8 @@ function syncAllAndroidPermsV23(fromGrantCallback) {
       mkRow(p.storage, '📁', 'Доступ ко всем файлам', 'Чтение/запись рабочих папок, конфига и .apk', '🔓 Выдать', 'requestAndroidStoragePerm()') +
       mkRow(p.notif, '🔔', 'Шторка уведомлений (Android 13–16)', 'Живой % закачек, статус и кнопки в шторке', '🔔 Разрешить', 'requestNotifPermV23()') +
       mkRow(p.battery, '🔋', 'Снять ограничение батареи (Doze)', 'DataSync сервис не замирает при сворачивании', '🔋 Снять лимит', 'requestBatteryPermV23()') +
-      mkRow(p.install, '📲', 'Установка собранных APK', 'Прямой запуск MT-установщика из билдера', '📲 Разрешить', 'requestInstallPermV23()');
+      mkRow(p.install, '📲', 'Установка собранных APK', 'Прямой запуск MT-установщика из билдера', '📲 Разрешить', 'requestInstallPermV23()') +
+      mkRow(p.overlay, '🪟', 'Поверх других окон (HyperOS)', 'Сувать готовое окно установки прямо поверх всех приложений', '🪟 Разрешить', 'requestOverlayPermV24()');
   }
 
   if (banner && !banner._manualOpenV23) {
@@ -3060,6 +3075,12 @@ function autoStepMissingPermsOnBootV23() {
     sessionStorage.setItem('jb_asked_bat_v23', '1');
     autoPromptChainBusyV23 = true;
     setTimeout(() => { autoPromptChainBusyV23 = false; requestBatteryPermV23(); }, 650);
+    return;
+  }
+  if (lastPermsStateV23.notif && lastPermsStateV23.battery && !lastPermsStateV23.overlay && !sessionStorage.getItem('jb_asked_ov_v24')) {
+    sessionStorage.setItem('jb_asked_ov_v24', '1');
+    autoPromptChainBusyV23 = true;
+    setTimeout(() => { autoPromptChainBusyV23 = false; requestOverlayPermV24(); }, 650);
   }
 }
 
@@ -3119,6 +3140,7 @@ function requestNextMissingPermV23() {
   if (!lastPermsStateV23.storage) { requestAndroidStoragePerm(); return; }
   if (!lastPermsStateV23.notif) { requestNotifPermV23(); return; }
   if (!lastPermsStateV23.battery) { requestBatteryPermV23(); return; }
+  if (!lastPermsStateV23.overlay) { requestOverlayPermV24(); return; }
   if (!lastPermsStateV23.install) { requestInstallPermV23(); return; }
   showStatus('✅ Все необходимые права уже выданы!', false);
 }
