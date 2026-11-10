@@ -1432,6 +1432,59 @@ window.onOnboardingPermUpdatedV165 = function(kind, granted) {
 window.syncOnboardingPermsV165 = function() {
   const hadPerm = checkAndroidStorageState();
   if (hadPerm) {
+
+window.requestOverlayPermV24 = function requestOverlayPermV24() {
+  try {
+    if (window.AndroidBridge && typeof window.AndroidBridge.requestOverlayPermission === 'function') {
+      window.AndroidBridge.requestOverlayPermission();
+    } else {
+      showStatus('⚠️ Мост requestOverlayPermission недоступен', true);
+    }
+  } catch (e) {
+    showStatus('❌ Ошибка открытия настроек оверлея: ' + e, true);
+  }
+};
+
+window.toggleAutoPopupApkV24 = async function toggleAutoPopupApkV24(enabled) {
+  try {
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({auto_popup_apk: Boolean(enabled)})
+    });
+    showStatus(enabled
+      ? '🚀 Включено: готовая сборка сама скачается в 32 потока и выскочит поверх всех окон!'
+      : '⏸ Авто-показ окна установки поверх всех окон выключен.', false);
+    if (enabled && !lastPermsStateV23.overlay) {
+      window.requestOverlayPermV24();
+    }
+  } catch (e) {}
+};
+
+window.testNativeOverlayV24 = async function testNativeOverlayV24() {
+  syncAllAndroidPermsV23(false);
+  if (!lastPermsStateV23.overlay) {
+    showStatus('🔓 Сначала включи тумблер «Поверх других приложений»!', false);
+    window.requestOverlayPermV24();
+    return;
+  }
+  try {
+    const r = await fetch('/api/test_overlay_apk', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({})
+    });
+    const d = await r.json();
+    if (d.status === 'ok') {
+      showStatus('🪟 Нативное окно установки открыто поверх всех окон (Сборка #' + d.build_number + ')!', false);
+    } else {
+      showStatus('⚠️ ' + (d.error || 'Не удалось показать оверлей'), true);
+    }
+  } catch (e) {
+    showStatus('❌ Ошибка вызова оверлея: ' + e, true);
+  }
+};
+
     initApp();
     refreshInstalledVersion();
   }
