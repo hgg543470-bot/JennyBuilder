@@ -230,6 +230,68 @@
     background: #0d1520 !important;
   }
 </style>
+<script id="jbOverlayBootV242">
+function requestOverlayPermV24() {
+  try {
+    if (window.AndroidBridge && typeof window.AndroidBridge.requestOverlayPermission === 'function') {
+      window.AndroidBridge.requestOverlayPermission();
+    } else if (typeof window.showStatus === 'function') {
+      window.showStatus('⚠️ Мост requestOverlayPermission не найден — установи свежий APK!', true);
+    }
+  } catch (e) {
+    if (typeof window.showStatus === 'function') window.showStatus('❌ Ошибка открытия оверлея: ' + e, true);
+  }
+}
+window.requestOverlayPermV24 = requestOverlayPermV24;
+
+async function toggleAutoPopupApkV24(enabled) {
+  try {
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({auto_popup_apk: Boolean(enabled)})
+    });
+    if (typeof window.showStatus === 'function') {
+      window.showStatus(enabled
+        ? '🚀 Включено: готовая сборка сама скачается в 32 потока и выскочит поверх всех окон!'
+        : '⏸ Авто-показ окна установки поверх всех окон выключен.', false);
+    }
+    var hasOv = (window.AndroidBridge && typeof window.AndroidBridge.canDrawOverlays === 'function')
+      ? Boolean(window.AndroidBridge.canDrawOverlays()) : true;
+    if (enabled && !hasOv) requestOverlayPermV24();
+  } catch (e) {}
+}
+window.toggleAutoPopupApkV24 = toggleAutoPopupApkV24;
+
+async function testNativeOverlayV24() {
+  if (typeof window.syncAllAndroidPermsV23 === 'function') window.syncAllAndroidPermsV23(false);
+  var hasOv = (window.AndroidBridge && typeof window.AndroidBridge.canDrawOverlays === 'function')
+    ? Boolean(window.AndroidBridge.canDrawOverlays()) : false;
+  if (!hasOv) {
+    if (typeof window.showStatus === 'function') window.showStatus('🔓 Сначала включи тумблер «Поверх других приложений»!', false);
+    requestOverlayPermV24();
+    return;
+  }
+  try {
+    var r = await fetch('/api/test_overlay_apk', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({})
+    });
+    var d = await r.json();
+    if (typeof window.showStatus === 'function') {
+      if (d.status === 'ok') {
+        window.showStatus('🪟 Нативное окно установки открыто поверх всех окон (Сборка #' + d.build_number + ')!', false);
+      } else {
+        window.showStatus('⚠️ ' + (d.error || 'Не удалось показать оверлей'), true);
+      }
+    }
+  } catch (e) {
+    if (typeof window.showStatus === 'function') window.showStatus('❌ Ошибка вызова оверлея: ' + e, true);
+  }
+}
+window.testNativeOverlayV24 = testNativeOverlayV24;
+</script>
 </head>
 <body>
 
@@ -286,7 +348,7 @@
 
 <div class="card" id="topHeaderCard">
   <div class="card-title">
-    <span>🛠️ JENNY BUILDER v2.4 (OVERLAY • SHADE)</span>
+    <span>🛠️ JENNY BUILDER v2.4.2 (OVERLAY • SHADE)</span>
     <button class="btn" style="width:auto;padding:4px 8px;font-size:11px;" onclick="toggleSettings()">⚙️ Настройки</button>
   </div>
   <div id="settingsArea" style="display:none;margin-top:6px;border-top:1px solid #30363d;padding-top:8px;">
