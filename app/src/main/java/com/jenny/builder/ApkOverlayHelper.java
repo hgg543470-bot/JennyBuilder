@@ -57,9 +57,7 @@ public class ApkOverlayHelper {
         GradientDrawable gd = new GradientDrawable();
         gd.setColor(bgColor);
         gd.setCornerRadius(radiusPx);
-        if (strokePx > 0) {
-            gd.setStroke(strokePx, strokeColor);
-        }
+        if (strokePx > 0) gd.setStroke(strokePx, strokeColor);
         return gd;
     }
 
@@ -68,22 +66,16 @@ public class ApkOverlayHelper {
             if (pi == null) return "";
             Signature[] sigs = null;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && pi.signingInfo != null) {
-                if (pi.signingInfo.hasMultipleSigners()) {
-                    sigs = pi.signingInfo.getApkContentsSigners();
-                } else {
-                    sigs = pi.signingInfo.getSigningCertificateHistory();
-                }
+                sigs = pi.signingInfo.hasMultipleSigners()
+                        ? pi.signingInfo.getApkContentsSigners()
+                        : pi.signingInfo.getSigningCertificateHistory();
             }
-            if ((sigs == null || sigs.length == 0) && pi.signatures != null) {
-                sigs = pi.signatures;
-            }
+            if ((sigs == null || sigs.length == 0) && pi.signatures != null) sigs = pi.signatures;
             if (sigs != null && sigs.length > 0 && sigs[0] != null) {
                 MessageDigest md = MessageDigest.getInstance("SHA-256");
                 byte[] digest = md.digest(sigs[0].toByteArray());
                 StringBuilder sb = new StringBuilder();
-                for (byte b : digest) {
-                    sb.append(String.format("%02x", b));
-                }
+                for (byte b : digest) sb.append(String.format("%02x", b));
                 return sb.toString();
             }
         } catch (Exception ignored) {}
@@ -98,9 +90,7 @@ public class ApkOverlayHelper {
         if (currentOverlayView != null && ctx != null) {
             try {
                 WindowManager wm = (WindowManager) ctx.getApplicationContext().getSystemService(Context.WINDOW_SERVICE);
-                if (wm != null) {
-                    wm.removeViewImmediate(currentOverlayView);
-                }
+                if (wm != null) wm.removeViewImmediate(currentOverlayView);
             } catch (Exception e1) {
                 try {
                     WindowManager wm = (WindowManager) ctx.getApplicationContext().getSystemService(Context.WINDOW_SERVICE);
@@ -133,21 +123,16 @@ public class ApkOverlayHelper {
         try {
             WindowManager wm = (WindowManager) appCtx.getSystemService(Context.WINDOW_SERVICE);
             if (wm == null) return;
-
             TextView tv = new TextView(appCtx);
             tv.setText(text);
             tv.setTextColor(Color.parseColor("#7ee787"));
             tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
             tv.setTypeface(Typeface.DEFAULT_BOLD);
-            int padH = dp(appCtx, 14);
-            int padV = dp(appCtx, 9);
-            tv.setPadding(padH, padV, padH, padV);
+            tv.setPadding(dp(appCtx, 14), dp(appCtx, 9), dp(appCtx, 14), dp(appCtx, 9));
             tv.setBackground(makeBox(Color.parseColor("#EE0D1117"), Color.parseColor("#3fb950"), dp(appCtx, 1.5f), dp(appCtx, 12)));
-
             int type = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                     ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                     : WindowManager.LayoutParams.TYPE_PHONE;
-
             WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                     WindowManager.LayoutParams.WRAP_CONTENT,
                     WindowManager.LayoutParams.WRAP_CONTENT,
@@ -155,8 +140,7 @@ public class ApkOverlayHelper {
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                             | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                             | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                    PixelFormat.TRANSLUCENT
-            );
+                    PixelFormat.TRANSLUCENT);
             lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
             lp.y = dp(appCtx, 42);
             wm.addView(tv, lp);
@@ -181,7 +165,6 @@ public class ApkOverlayHelper {
                 dismissMiniBannerInternal(appCtx);
                 return;
             }
-
             if (!canInstallPackages(appCtx)) {
                 showMiniTopBannerInternal(appCtx, "🔓 Разреши установку для Jenny Builder — окно откроется сразу!");
                 dismissOverlayInternal(appCtx);
@@ -194,12 +177,10 @@ public class ApkOverlayHelper {
                 }
                 return;
             }
-
             Uri contentUri = ApkContentProvider.getUriForFile(apkFile);
             Intent intent = new Intent(Intent.ACTION_VIEW);
             intent.setDataAndType(contentUri, "application/vnd.android.package-archive");
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
-            // Важно для Android 16 / HyperOS: стартуем установщик ДО снятия оверлея, пока окно активно!
             appCtx.startActivity(intent);
             MAIN_HANDLER.postDelayed(() -> {
                 dismissOverlayInternal(appCtx);
@@ -213,9 +194,7 @@ public class ApkOverlayHelper {
     }
 
     private static void startInstallPermRadar(final Context appCtx, final String apkPath) {
-        if (installPermRadarRunnable != null) {
-            MAIN_HANDLER.removeCallbacks(installPermRadarRunnable);
-        }
+        if (installPermRadarRunnable != null) MAIN_HANDLER.removeCallbacks(installPermRadarRunnable);
         installPermRadarTicks = 0;
         installPermRadarRunnable = new Runnable() {
             @Override
@@ -227,11 +206,8 @@ public class ApkOverlayHelper {
                     launchSystemInstallerNow(appCtx, apkPath);
                     return;
                 }
-                if (installPermRadarTicks < 400) {
-                    MAIN_HANDLER.postDelayed(this, 160);
-                } else {
-                    dismissMiniBannerInternal(appCtx);
-                }
+                if (installPermRadarTicks < 400) MAIN_HANDLER.postDelayed(this, 160);
+                else dismissMiniBannerInternal(appCtx);
             }
         };
         MAIN_HANDLER.postDelayed(installPermRadarRunnable, 160);
@@ -239,7 +215,6 @@ public class ApkOverlayHelper {
 
     private static void startUninstallThenInstall(final Context ctx, final String pkgName, final String apkPath) {
         final Context appCtx = ctx.getApplicationContext();
-        // Держим компактную верхнюю плашку поверх экрана, чтобы Android 16 / HyperOS разрешил авто-старт установки сразу после удаления!
         showMiniTopBannerInternal(appCtx, "🗑️ Подтверди удаление — установка нового APK стартует мгновенно!");
         try {
             Intent delIntent = new Intent(Intent.ACTION_DELETE, Uri.parse("package:" + pkgName));
@@ -250,9 +225,7 @@ public class ApkOverlayHelper {
         }
         MAIN_HANDLER.postDelayed(() -> dismissOverlayInternal(appCtx), 160);
 
-        if (uninstallRadarRunnable != null) {
-            MAIN_HANDLER.removeCallbacks(uninstallRadarRunnable);
-        }
+        if (uninstallRadarRunnable != null) MAIN_HANDLER.removeCallbacks(uninstallRadarRunnable);
         uninstallRadarTicks = 0;
         uninstallRadarRunnable = new Runnable() {
             @Override
@@ -272,11 +245,8 @@ public class ApkOverlayHelper {
                     MAIN_HANDLER.postDelayed(() -> launchSystemInstallerNow(appCtx, apkPath), 200);
                     return;
                 }
-                if (uninstallRadarTicks < 500) {
-                    MAIN_HANDLER.postDelayed(this, 150);
-                } else {
-                    dismissMiniBannerInternal(appCtx);
-                }
+                if (uninstallRadarTicks < 500) MAIN_HANDLER.postDelayed(this, 150);
+                else dismissMiniBannerInternal(appCtx);
             }
         };
         MAIN_HANDLER.postDelayed(uninstallRadarRunnable, 150);
@@ -293,8 +263,7 @@ public class ApkOverlayHelper {
         tvLbl.setText(label);
         tvLbl.setTextColor(Color.parseColor("#8b949e"));
         tvLbl.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
-        LinearLayout.LayoutParams lpLbl = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.38f);
-        row.addView(tvLbl, lpLbl);
+        row.addView(tvLbl, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.38f));
 
         TextView tvVal = new TextView(ctx);
         tvVal.setText(val);
@@ -302,8 +271,7 @@ public class ApkOverlayHelper {
         tvVal.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
         tvVal.setTypeface(Typeface.DEFAULT_BOLD);
         tvVal.setGravity(Gravity.END);
-        LinearLayout.LayoutParams lpVal = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.62f);
-        row.addView(tvVal, lpVal);
+        row.addView(tvVal, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.62f));
 
         parent.addView(row);
         if (showDivider) {
@@ -322,9 +290,7 @@ public class ApkOverlayHelper {
         b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setPadding(dp(ctx, 10), dp(ctx, 9), dp(ctx, 10), dp(ctx, 9));
         b.setBackground(makeBox(bgCol, borderCol, dp(ctx, 1.2f), dp(ctx, 9)));
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            b.setStateListAnimator(null);
-        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) b.setStateListAnimator(null);
         return b;
     }
 
@@ -332,19 +298,15 @@ public class ApkOverlayHelper {
         if (ctx == null || apkPath == null || apkPath.isEmpty()) return false;
         final Context appCtx = ctx.getApplicationContext();
         if (!canDrawOverlays(appCtx)) return false;
-
         final File f = new File(apkPath);
         if (!f.exists()) return false;
 
         MAIN_HANDLER.post(() -> {
             try {
                 dismissOverlayInternal(appCtx);
-
                 PackageManager pm = appCtx.getPackageManager();
                 int flags = PackageManager.GET_SIGNATURES;
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    flags |= PackageManager.GET_SIGNING_CERTIFICATES;
-                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) flags |= PackageManager.GET_SIGNING_CERTIFICATES;
                 PackageInfo archiveInfo = pm.getPackageArchiveInfo(apkPath, flags);
                 if (archiveInfo == null) return;
 
@@ -364,12 +326,9 @@ public class ApkOverlayHelper {
                     try { appIcon = pm.getApplicationIcon(archiveInfo.applicationInfo); } catch (Exception ignored) {}
                 }
 
-                boolean alreadyInstalled = false;
+                boolean alreadyInstalled = false, sigMismatch = false, isDowngrade = false;
                 String instVerName = "";
                 long instVerCode = 0;
-                boolean sigMismatch = false;
-                boolean isDowngrade = false;
-
                 try {
                     PackageInfo instInfo = pm.getPackageInfo(pkg, flags);
                     alreadyInstalled = true;
@@ -384,14 +343,11 @@ public class ApkOverlayHelper {
                 double sizeMb = Math.round((f.length() / (1024.0 * 1024.0)) * 100.0) / 100.0;
                 boolean hasConflict = (sigMismatch || isDowngrade);
 
-                // Полноэкранная подложка с перехватом кнопки «Назад»
                 FrameLayout root = new FrameLayout(appCtx) {
                     @Override
                     public boolean dispatchKeyEvent(KeyEvent event) {
                         if (event != null && event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
-                            if (event.getAction() == KeyEvent.ACTION_UP) {
-                                dismissOverlayInternal(appCtx);
-                            }
+                            if (event.getAction() == KeyEvent.ACTION_UP) dismissOverlayInternal(appCtx);
                             return true;
                         }
                         return super.dispatchKeyEvent(event);
@@ -412,11 +368,9 @@ public class ApkOverlayHelper {
                 FrameLayout.LayoutParams cardLp = new FrameLayout.LayoutParams(maxCardW, ViewGroup.LayoutParams.WRAP_CONTENT);
                 cardLp.gravity = Gravity.CENTER;
 
-                // Шапка карточки: иконка + имя приложения + кнопка закрытия
                 LinearLayout hdr = new LinearLayout(appCtx);
                 hdr.setOrientation(LinearLayout.HORIZONTAL);
                 hdr.setGravity(Gravity.CENTER_VERTICAL);
-
                 if (appIcon != null) {
                     ImageView iv = new ImageView(appCtx);
                     iv.setImageDrawable(appIcon);
@@ -424,7 +378,6 @@ public class ApkOverlayHelper {
                     ivLp.rightMargin = dp(appCtx, 8);
                     hdr.addView(iv, ivLp);
                 }
-
                 TextView tvTitle = new TextView(appCtx);
                 tvTitle.setText("📲 " + appName);
                 tvTitle.setTextColor(Color.parseColor("#7ee787"));
@@ -438,26 +391,22 @@ public class ApkOverlayHelper {
                 hdr.addView(btnX, new LinearLayout.LayoutParams(dp(appCtx, 36), dp(appCtx, 32)));
                 card.addView(hdr);
 
-                // Плашка причины (например, авто-скачивание после сборки)
                 if (bannerReason != null && !bannerReason.isEmpty()) {
                     TextView tvReason = new TextView(appCtx);
                     tvReason.setText(bannerReason);
                     tvReason.setTextColor(Color.parseColor("#79c0ff"));
                     tvReason.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
                     tvReason.setTypeface(Typeface.DEFAULT_BOLD);
-                    int rp = dp(appCtx, 9);
-                    tvReason.setPadding(rp, dp(appCtx, 7), rp, dp(appCtx, 7));
+                    tvReason.setPadding(dp(appCtx, 9), dp(appCtx, 7), dp(appCtx, 9), dp(appCtx, 7));
                     tvReason.setBackground(makeBox(Color.parseColor("#102131"), Color.parseColor("#58a6ff"), dp(appCtx, 1), dp(appCtx, 9)));
                     LinearLayout.LayoutParams rLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
                     rLp.topMargin = dp(appCtx, 9);
                     card.addView(tvReason, rLp);
                 }
 
-                // Таблица сведений об APK
                 LinearLayout infoBox = new LinearLayout(appCtx);
                 infoBox.setOrientation(LinearLayout.VERTICAL);
-                int ip = dp(appCtx, 10);
-                infoBox.setPadding(ip, dp(appCtx, 6), ip, dp(appCtx, 6));
+                infoBox.setPadding(dp(appCtx, 10), dp(appCtx, 6), dp(appCtx, 10), dp(appCtx, 6));
                 infoBox.setBackground(makeBox(Color.parseColor("#090d13"), Color.parseColor("#30363d"), dp(appCtx, 1), dp(appCtx, 10)));
                 LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
                 infoLp.topMargin = dp(appCtx, 9);
@@ -466,19 +415,16 @@ public class ApkOverlayHelper {
                 addInfoRow(appCtx, infoBox, "Файл:", f.getName() + " (" + sizeMb + " МБ)", Color.parseColor("#e6edf3"), true);
                 addInfoRow(appCtx, infoBox, "Пакет:", pkg, Color.parseColor("#c9d1d9"), true);
                 addInfoRow(appCtx, infoBox, "Версия в APK:", apkVerName + " [код: " + apkVerCode + "]", Color.parseColor("#7ee787"), true);
-
                 if (alreadyInstalled) {
                     addInfoRow(appCtx, infoBox, "Установлена:", instVerName + " [код: " + instVerCode + "]", Color.parseColor("#79c0ff"), true);
                     addInfoRow(appCtx, infoBox, "Подпись APK:",
                             sigMismatch ? "❌ Разные подписи!" : "✅ Совпадает",
-                            sigMismatch ? Color.parseColor("#ff7b72") : Color.parseColor("#3fb950"),
-                            false);
+                            sigMismatch ? Color.parseColor("#ff7b72") : Color.parseColor("#3fb950"), false);
                 } else {
                     addInfoRow(appCtx, infoBox, "Статус:", "Новое приложение (не установлено)", Color.parseColor("#e3b341"), false);
                 }
                 card.addView(infoBox, infoLp);
 
-                // Красный блок авто-удаления при несовпадении подписи или понижении версии
                 if (hasConflict) {
                     LinearLayout warnBox = new LinearLayout(appCtx);
                     warnBox.setOrientation(LinearLayout.VERTICAL);
@@ -506,19 +452,15 @@ public class ApkOverlayHelper {
                     wdLp.bottomMargin = dp(appCtx, 8);
                     warnBox.addView(tvWarnD, wdLp);
 
-                    Button btnUninst = makeStyledBtn(appCtx,
-                            "🗑️ ОК: Удалить старую и сразу установить",
+                    Button btnUninst = makeStyledBtn(appCtx, "🗑️ ОК: Удалить старую и сразу установить",
                             Color.parseColor("#5a1e24"), Color.parseColor("#ff7b72"), Color.parseColor("#ffa198"));
                     btnUninst.setOnClickListener(v -> startUninstallThenInstall(appCtx, pkg, apkPath));
                     warnBox.addView(btnUninst, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
                     card.addView(warnBox, wLp);
                 }
 
-                // Нижний ряд кнопок: Установить APK | Позже
                 LinearLayout btnRow = new LinearLayout(appCtx);
                 btnRow.setOrientation(LinearLayout.HORIZONTAL);
-
                 Button btnInst = makeStyledBtn(appCtx, "📲 Установить APK",
                         Color.parseColor("#1f4729"), Color.parseColor("#3fb950"), Color.parseColor("#7ee787"));
                 btnInst.setOnClickListener(v -> launchSystemInstallerNow(appCtx, apkPath));
@@ -529,9 +471,7 @@ public class ApkOverlayHelper {
                 Button btnClose = makeStyledBtn(appCtx, "Позже",
                         Color.parseColor("#21262d"), Color.parseColor("#30363d"), Color.parseColor("#c9d1d9"));
                 btnClose.setOnClickListener(v -> dismissOverlayInternal(appCtx));
-                LinearLayout.LayoutParams b2Lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.38f);
-                btnRow.addView(btnClose, b2Lp);
-
+                btnRow.addView(btnClose, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.38f));
                 card.addView(btnRow, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
                 ScrollView sv = new ScrollView(appCtx);
@@ -546,7 +486,6 @@ public class ApkOverlayHelper {
                 int type = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                         ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                         : WindowManager.LayoutParams.TYPE_PHONE;
-
                 WindowManager.LayoutParams wlp = new WindowManager.LayoutParams(
                         WindowManager.LayoutParams.MATCH_PARENT,
                         WindowManager.LayoutParams.MATCH_PARENT,
@@ -554,8 +493,7 @@ public class ApkOverlayHelper {
                         WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
                                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                                 | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
-                        PixelFormat.TRANSLUCENT
-                );
+                        PixelFormat.TRANSLUCENT);
                 wlp.gravity = Gravity.CENTER;
 
                 WindowManager wm = (WindowManager) appCtx.getSystemService(Context.WINDOW_SERVICE);
