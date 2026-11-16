@@ -581,6 +581,26 @@ window.testNativeOverlayV24 = testNativeOverlayV24;
       <span class="btn-main" id="mainDlGoodZip">✅ Скачать с GitHub чистый .zip архив последней удачной сборки</span>
       <span class="btn-sub" id="subDlGoodZip">Откуда: GitHub ➔ Куда: в папку /storage/emulated/0/Download</span>
     </button>
+    <div class="grid2">
+      <button class="btn btn-blue" onclick="downloadLatestGoodApk(false, 'arm64')">
+        <span class="btn-main">📥 Скачать APK arm64</span>
+        <span class="btn-sub">Свежая сборка (64-bit)</span>
+      </button>
+      <button class="btn btn-blue" onclick="downloadLatestGoodApk(false, 'arm32')">
+        <span class="btn-main">📥 Скачать APK arm32</span>
+        <span class="btn-sub">Свежая сборка (32-bit)</span>
+      </button>
+    </div>
+    <div class="grid2">
+      <button class="btn btn-green" onclick="downloadLatestGoodApk(true, 'arm64')">
+        <span class="btn-main">📲 Установить APK arm64</span>
+        <span class="btn-sub">Скачать и установить (64-bit)</span>
+      </button>
+      <button class="btn btn-green" onclick="downloadLatestGoodApk(true, 'arm32')">
+        <span class="btn-main">📲 Установить APK arm32</span>
+        <span class="btn-sub">Скачать и установить (32-bit)</span>
+      </button>
+    </div>
     <button class="btn btn-green" onclick="openBrowser('pick_apk_install')">
       <span class="btn-main">📲 Выбрать и установить любой .apk файл из папки</span>
       <span class="btn-sub">Проверка подписи как в MT Manager + авто-удаление несовместимой версии</span>
@@ -667,9 +687,14 @@ window.testNativeOverlayV24 = testNativeOverlayV24;
       </button>
     </div>
     <div id="mtForceRedlWrap" style="display:none;margin-top:7px;">
-      <button class="btn" style="font-size:10.5px;padding:5px 8px;color:#8b949e;border-color:#30363d;" onclick="forceRedownloadCurrentMtApk()">
-        🔄 Перекачать этот APK с GitHub заново
-      </button>
+      <div class="grid2">
+        <button class="btn" style="font-size:10.5px;padding:5px 8px;color:#79c0ff;border-color:#30363d;" onclick="forceRedownloadCurrentMtApk('arm64')">
+          🔄 Перекачать APK arm64
+        </button>
+        <button class="btn" style="font-size:10.5px;padding:5px 8px;color:#d2a8ff;border-color:#30363d;" onclick="forceRedownloadCurrentMtApk('arm32')">
+          🔄 Перекачать APK arm32
+        </button>
+      </div>
     </div>
   </div>
 </div>
@@ -2354,75 +2379,91 @@ async function downloadBuildSourceZip(runNum, btnEl) {
 let lastMtRunContextV22 = null;
 let startupApkCheckedRepoV22 = '';
 
-async function downloadRunApk(runId, runNum, autoInstallAfter, forceRedownload) {
+async function downloadLatestGoodApk(autoInstallAfter, abi) {
+  const targetAbi = (abi === 'arm32') ? 'arm32' : 'arm64';
+  const good = latestGoodBuildInfo || allLoadedRuns.find(r => r.conclusion === 'success' || r.artifact_ready) || allLoadedRuns[0];
+  if (!good || !good.id) {
+    showStatus('⚠️ Сначала дождись загрузки списка сборок с GitHub!', true);
+    return;
+  }
+  await downloadRunApk(good.id, good.run_number, Boolean(autoInstallAfter), false, targetAbi);
+}
+
+async function downloadRunApk(runId, runNum, autoInstallAfter, forceRedownload, abi) {
   if (!checkAndroidStorageState()) {
     requestAndroidStoragePerm();
     return;
   }
+  const targetAbi = (abi === 'arm32') ? 'arm32' : 'arm64';
   lockAllInputsV22(null);
-  lastMtRunContextV22 = { runId: runId, runNum: runNum };
+  lastMtRunContextV22 = { runId: runId, runNum: runNum, abi: targetAbi };
   const sd = document.getElementById('saveDirInput').value.trim();
 
   if (!forceRedownload) {
-    const cachedItem = allLoadedRuns.find(x => String(x.run_number) === String(runNum) && x.apk_cached && x.apk_cached_path);
-    if (cachedItem && autoInstallAfter) {
-      showStatus('⚡ Открыт уже скачанный APK #' + runNum + ' из кэша (без повторного скачивания)!', false);
-      openMtInstallerForApk(cachedItem.apk_cached_path, '', { runId: runId, runNum: runNum });
+    const cachedItem = allLoadedRuns.find(x => String(x.run_number) === String(runNum));
+    const cachedPath = cachedItem
+      ? (targetAbi === 'arm32' ? cachedItem.apk_cached_path_arm32 : (cachedItem.apk_cached_path_arm64 || cachedItem.apk_cached_path))
+      : '';
+    if (cachedPath && autoInstallAfter) {
+      showStatus('⚡ Открыт уже скачанный APK #' + runNum + ' (' + targetAbi + ') из кэша (без повторного скачивания)!', false);
+      openMtInstallerForApk(cachedPath, '', { runId: runId, runNum: runNum, abi: targetAbi });
       return;
     }
   }
 
-  showStatus('⏳ Подготовка APK Сборки #' + runNum + ' (фоновый замок активен — можно сворачивать)...', false);
-  startProgressPolling('📥 Скачивание APK #' + runNum + ' (32 потока)', 'Проверка кэша / подключение к CDN GitHub...');
+  showStatus('⏳ Подготовка APK Сборки #' + runNum + ' (' + targetAbi + ') (фоновый замок активен — можно сворачивать)...', false);
+  startProgressPolling('📥 Скачивание APK #' + runNum + ' ' + targetAbi + ' (32 потока)', 'Проверка кэша / подключение к CDN GitHub...');
   try {
     const r = await fetch('/api/download_apk', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({run_id: runId, run_number: runNum, save_dir: sd, force_redownload: Boolean(forceRedownload), auto_install: Boolean(autoInstallAfter)})
+      body: JSON.stringify({run_id: runId, run_number: runNum, abi: targetAbi, save_dir: sd, force_redownload: Boolean(forceRedownload), auto_install: Boolean(autoInstallAfter)})
     });
     const d = await r.json();
     stopProgressPolling();
     if (d.status === 'ok') {
       loadRuns(false);
       if (d.reused_cache) {
-        showStatus('⚡ APK #' + runNum + ' уже скачан на телефоне (' + d.size_mb + ' МБ) — открываю сразу без перекачивания!', false);
+        showStatus('⚡ APK #' + runNum + ' (' + targetAbi + ') уже скачан на телефоне (' + d.size_mb + ' МБ) — открываю сразу без перекачивания!', false);
       } else {
-        showStatus('✅ Готовый APK #' + runNum + ' скачан в 32 потока!\n• Файл: ' + d.apk_path + ' (' + d.size_mb + ' МБ)', false);
+        showStatus('✅ Готовый APK #' + runNum + ' (' + targetAbi + ') скачан в 32 потока!\n• Файл: ' + d.apk_path + ' (' + d.size_mb + ' МБ)', false);
       }
       if (autoInstallAfter && !d.overlay_shown) {
-        openMtInstallerForApk(d.apk_path, '', { runId: runId, runNum: runNum });
+        openMtInstallerForApk(d.apk_path, '', { runId: runId, runNum: runNum, abi: targetAbi });
       }
     } else if (d.status === 'cancelled') {
-      showStatus('⏹ Скачивание APK #' + runNum + ' отменено. Временные сегменты удалены.', true);
+      showStatus('⏹ Скачивание APK #' + runNum + ' (' + targetAbi + ') отменено. Временные сегменты удалены.', true);
     } else {
       showStatus('❌ Ошибка скачивания APK: ' + d.error, true);
     }
   } catch (e) {
     stopProgressPolling();
     showStatus('⚠️ Связь с окном прервалась, проверяю фоновую загрузку...', false);
-    setTimeout(() => { reconnectBackgroundStateV22(runId, runNum, autoInstallAfter); }, 800);
+    setTimeout(() => { reconnectBackgroundStateV22(runId, runNum, autoInstallAfter, targetAbi); }, 800);
   }
 }
 
-function forceRedownloadCurrentMtApk() {
+function forceRedownloadCurrentMtApk(abi) {
   if (!lastMtRunContextV22 || !lastMtRunContextV22.runId) return;
+  const targetAbi = abi || lastMtRunContextV22.abi || 'arm64';
   closeMtInstaller();
-  downloadRunApk(lastMtRunContextV22.runId, lastMtRunContextV22.runNum, true, true);
+  downloadRunApk(lastMtRunContextV22.runId, lastMtRunContextV22.runNum, true, true, targetAbi);
 }
 
-async function reconnectBackgroundStateV22(runId, runNum, autoInstallAfter) {
+async function reconnectBackgroundStateV22(runId, runNum, autoInstallAfter, abi) {
   try {
+    const targetAbi = abi || (lastMtRunContextV22 && lastMtRunContextV22.abi) || 'arm64';
     const r = await fetch('/api/progress');
     const d = await r.json();
     if (d.status === 'ok' && d.progress && d.progress.active) {
       startProgressPolling(d.progress.title, d.progress.detail, d.progress.cancellable);
       if (runId && autoInstallAfter) {
-        downloadRunApk(runId, runNum, true, false);
+        downloadRunApk(runId, runNum, true, false, targetAbi);
       }
       return;
     }
     if (runNum && autoInstallAfter) {
-      downloadRunApk(runId, runNum, true, false);
+      downloadRunApk(runId, runNum, true, false, targetAbi);
     }
   } catch (e) {}
 }
@@ -2525,8 +2566,10 @@ function renderRunsPayloadToDom(d) {
       html += '  </div>';
       html += '  <div class="run-btns">';
       html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 7px;font-size:10.5px;">📦 .zip</button>';
-      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 8px;font-size:10.5px;">📥 APK</button>';
-      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 8px;font-size:10.5px;">⏳ Установить</button>';
+      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 7px;font-size:10.5px;">📥 APK arm64</button>';
+      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 7px;font-size:10.5px;">📥 APK arm32</button>';
+      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 7px;font-size:10.5px;">⏳ Установить arm64</button>';
+      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 7px;font-size:10.5px;">⏳ Установить arm32</button>';
       html += '  </div>';
       html += '</div>';
     }
@@ -2552,18 +2595,23 @@ function renderRunsPayloadToDom(d) {
     html += '    <div style="font-size:10px;color:#8b949e;">Дата: ' + item.created_at + ' • ID коммита: ' + item.head_sha + '</div>';
     html += '  </div>';
     const isReadyEarly = Boolean(item.conclusion === 'success' || item.artifact_ready || (d.active && d.active.run_id === item.id && d.active.artifact_ready));
-    const instBtnLbl = item.apk_cached ? '📲 Установить ✓' : '📲 Установить';
+    const instBtnLbl64 = (item.apk_cached_arm64 || item.apk_cached) ? '📲 Установить arm64 ✓' : '📲 Установить arm64';
+    const instBtnLbl32 = item.apk_cached_arm32 ? '📲 Установить arm32 ✓' : '📲 Установить arm32';
     if (isReadyEarly) {
       html += '  <div class="run-btns">';
       html += '    <button class="btn btn-purple" style="width:auto;padding:6px 7px;font-size:10.5px;" onclick="event.stopPropagation();downloadBuildSourceZip(' + item.run_number + ', this)">📦 .zip</button>';
-      html += '    <button class="btn btn-blue" style="width:auto;padding:6px 8px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', false, false)">📥 APK</button>';
-      html += '    <button class="btn btn-green" style="width:auto;padding:6px 8px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', true, false)">' + instBtnLbl + '</button>';
+      html += '    <button class="btn btn-blue" style="width:auto;padding:6px 7px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', false, false, \'arm64\')">📥 APK arm64</button>';
+      html += '    <button class="btn btn-blue" style="width:auto;padding:6px 7px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', false, false, \'arm32\')">📥 APK arm32</button>';
+      html += '    <button class="btn btn-green" style="width:auto;padding:6px 7px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', true, false, \'arm64\')">' + instBtnLbl64 + '</button>';
+      html += '    <button class="btn btn-green" style="width:auto;padding:6px 7px;font-size:10.5px;" onclick="event.stopPropagation();downloadRunApk(' + item.id + ', ' + item.run_number + ', true, false, \'arm32\')">' + instBtnLbl32 + '</button>';
       html += '  </div>';
     } else if (item.status !== 'completed') {
       html += '  <div class="run-btns">';
       html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 7px;font-size:10.5px;">📦 .zip</button>';
-      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 8px;font-size:10.5px;">📥 APK</button>';
-      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 8px;font-size:10.5px;">⏳ Установить</button>';
+      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 7px;font-size:10.5px;">📥 APK arm64</button>';
+      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 7px;font-size:10.5px;">📥 APK arm32</button>';
+      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 7px;font-size:10.5px;">⏳ Установить arm64</button>';
+      html += '    <button class="btn btn-disabled-build" disabled style="width:auto;padding:6px 7px;font-size:10.5px;">⏳ Установить arm32</button>';
       html += '  </div>';
     } else if (item.conclusion === 'failure') {
       html += '  <div class="run-btns">';

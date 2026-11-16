@@ -144,22 +144,76 @@ def _show_native_apk_overlay(apk_path: str, banner_text: str = "", only_when_bg:
     return False
 
 
-def download_apk_core(run_id, run_number, save_dir: str = "", force_redl: bool = False, token: str = "", repo: str = "") -> dict:
+def _normalize_apk_abi(abi: str = "arm64") -> str:
+    a = str(abi or "arm64").strip().lower()
+    if "32" in a or "v7" in a or "armeabi" in a:
+        return "arm32"
+    return "arm64"
+
+
+def _select_artifact_for_abi(art_list: list, norm_abi: str) -> dict:
+    if not art_list:
+        return None
+    if norm_abi == "arm64":
+        for a in art_list:
+            nm = str(a.get("name") or "").lower()
+            if "arm64" in nm or "v8a" in nm:
+                return a
+        for a in art_list:
+            nm = str(a.get("name") or "").lower()
+            if "armeabi" not in nm and "v7a" not in nm and "arm32" not in nm:
+                return a
+        return art_list[0]
+    else:
+        for a in art_list:
+            nm = str(a.get("name") or "").lower()
+            if "armeabi" in nm or "v7a" in nm or "arm32" in nm:
+                return a
+        for a in art_list:
+            nm = str(a.get("name") or "").lower()
+            if "arm64" not in nm and "v8a" not in nm:
+                return a
+        return art_list[0]
+
+
+def _select_zip_apk_member_for_abi(apk_members: list, norm_abi: str) -> str:
+    if not apk_members:
+        return ""
+    if norm_abi == "arm64":
+        for m in apk_members:
+            low = m.lower()
+            if "arm64" in low or "v8a" in low:
+                return m
+        for m in apk_members:
+            low = m.lower()
+            if "armeabi" not in low and "v7a" not in low and "arm32" not in low:
+                return m
+        return apk_members[0]
+    else:
+        for m in apk_members:
+            low = m.lower()
+            if "armeabi" in low or "v7a" in low or "arm32" in low:
+                return m
+        return apk_members[0]
+
+
+def download_apk_core(run_id, run_number, save_dir: str = "", force_redl: bool = False, token: str = "", repo: str = "", abi: str = "arm64") -> dict:
     cfg = load_config()
     tok = (token or cfg.get("token") or "").strip()
     rep = (repo or cfg.get("repo") or DEFAULT_REPO).strip()
     sdir = (save_dir or cfg.get("save_dir") or DEFAULT_SAVE_DIR).strip()
+    norm_abi = _normalize_apk_abi(abi)
     os.makedirs(sdir, exist_ok=True)
     os.makedirs(APK_TEMP_CACHE_DIR, exist_ok=True)
     save_config({"save_dir": sdir})
 
     repo_short = rep.split("/")[-1]
-    out_apk_name = f"{repo_short}_#{run_number}.apk"
+    out_apk_name = f"{repo_short}_#{run_number}_{norm_abi}.apk"
     out_apk_path = os.path.join(sdir, out_apk_name)
     cache_apk_path = os.path.join(APK_TEMP_CACHE_DIR, out_apk_name)
 
     if not force_redl:
-        existing_apk = _find_existing_downloaded_apk(repo_short, run_number, sdir)
+        existing_apk = _find_existing_downloaded_apk(repo_short, run_number, sdir, norm_abi)
         if existing_apk:
             sz_mb = round(os.path.getsize(existing_apk) / (1024.0 * 1024.0), 2)
             return {
@@ -167,10 +221,11 @@ def download_apk_core(run_id, run_number, save_dir: str = "", force_redl: bool =
                 "apk_path": existing_apk,
                 "size_mb": sz_mb,
                 "run_number": run_number,
+                "abi": norm_abi,
                 "reused_cache": True,
             }
 
-    dl_key = f"{repo_short}_{run_number}"
+    dl_key = f"{repo_short}_{run_number}_{norm_abi}"
     wait_ev = None
     with _ACTIVE_APK_DL_LOCK:
         if dl_key in _ACTIVE_APK_DL_EVENTS:
@@ -185,53 +240,55 @@ def download_apk_core(run_id, run_number, save_dir: str = "", force_redl: bool =
         res_joined = _ACTIVE_APK_DL_RESULTS.get(dl_key)
         if res_joined:
             return dict(res_joined)
-        existing_after = _find_existing_downloaded_apk(repo_short, run_number, sdir)
+        existing_after = _find_existing_downloaded_apk(repo_short, run_number, sdir, norm_abi)
         if existing_after:
             sz_mb = round(os.path.getsize(existing_after) / (1024.0 * 1024.0), 2)
-            return {"status": "ok", "apk_path": existing_after, "size_mb": sz_mb, "run_number": run_number, "reused_cache": True}
+            return {"status": "ok", "apk_path": existing_after, "size_mb": sz_mb, "run_number": run_number, "abi": norm_abi, "reused_cache": True}
 
     reset_download_cancel()
     part_cache_path = cache_apk_path + ".part"
     register_temp_download_file(part_cache_path)
     try:
-        set_progress(True, 2, f"📥 Скачивание APK #{run_number}", "Получение ссылки на артефакт сборки...", cancellable=True)
+        set_progress(True, 2, f"📥 Скачивание APK #{run_number} ({norm_abi})", f"Получение ссылки на артефакт ({norm_abi})...", cancellable=True)
         arts = gh_api(f"actions/runs/{run_id}/artifacts", "GET", token=tok, repo=rep)
         art_list = arts.get("artifacts", [])
-        if not art_list:
+        chosen_art = _select_artifact_for_abi(art_list, norm_abi)
+        if not chosen_art:
             unregister_temp_download_file(part_cache_path)
             set_progress(False, 0)
             err_resp = {"status": "error", "error": "Артефакт APK ещё не сформирован в этой сборке"}
             _ACTIVE_APK_DL_RESULTS[dl_key] = err_resp
             return err_resp
 
-        art_id = art_list[0]["id"]
+        art_id = chosen_art["id"]
         zip_bytes = gh_download_bytes(
             f"actions/artifacts/{art_id}/zip",
             token=tok,
             repo=rep,
-            task_title=f"📥 Скачивание APK #{run_number} (32 потока)",
+            task_title=f"📥 Скачивание APK #{run_number} {norm_abi} (32 потока)",
             threads=32,
             cancellable=True,
-            resume_key=f"{repo_short}_{run_number}_{art_id}",
+            resume_key=f"{repo_short}_{run_number}_{norm_abi}_{art_id}",
         )
         check_download_cancelled()
 
-        set_progress(True, 98, f"📥 Распаковка APK #{run_number}", "Сохранение в кэш и папку загрузок...", cancellable=True)
+        set_progress(True, 98, f"📥 Распаковка APK #{run_number} ({norm_abi})", "Сохранение в кэш и папку загрузок...", cancellable=True)
         with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
             apk_members = [m for m in zf.namelist() if m.lower().endswith(".apk")]
-            if not apk_members:
+            chosen_member = _select_zip_apk_member_for_abi(apk_members, norm_abi)
+            if not chosen_member:
                 cleanup_cancelled_temp_files()
                 set_progress(False, 0)
                 err_resp = {"status": "error", "error": "Внутри артефакта не найден .apk файл"}
                 _ACTIVE_APK_DL_RESULTS[dl_key] = err_resp
                 return err_resp
             with open(part_cache_path, "wb") as out_f:
-                out_f.write(zf.read(apk_members[0]))
+                out_f.write(zf.read(chosen_member))
 
         check_download_cancelled()
         os.replace(part_cache_path, cache_apk_path)
         unregister_temp_download_file(part_cache_path)
-        _prune_apk_temp_cache(keep_max=3)
+        _prune_apk_temp_cache(keep_max=6)
 
         final_apk_path = cache_apk_path
         try:
@@ -243,12 +300,13 @@ def download_apk_core(run_id, run_number, save_dir: str = "", force_redl: bool =
             final_apk_path = cache_apk_path
 
         sz_mb = round(os.path.getsize(final_apk_path) / (1024.0 * 1024.0), 2)
-        set_progress(False, 100, "Готово", f"APK #{run_number} сохранён ({sz_mb} МБ)", cancellable=False)
+        set_progress(False, 100, "Готово", f"APK #{run_number} ({norm_abi}) сохранён ({sz_mb} МБ)", cancellable=False)
         ok_resp = {
             "status": "ok",
             "apk_path": final_apk_path,
             "size_mb": sz_mb,
             "run_number": run_number,
+            "abi": norm_abi,
             "reused_cache": False,
         }
         _ACTIVE_APK_DL_RESULTS[dl_key] = ok_resp
@@ -432,10 +490,11 @@ def _prune_apk_temp_cache(keep_max: int = 3):
         pass
 
 
-def _find_existing_downloaded_apk(repo_short: str, run_number, save_dir: str = "") -> str:
+def _find_existing_downloaded_apk(repo_short: str, run_number, save_dir: str = "", abi: str = "arm64") -> str:
     if not repo_short or run_number is None or str(run_number) == "":
         return ""
-    fname = f"{repo_short}_#{run_number}.apk"
+    norm_abi = _normalize_apk_abi(abi)
+    fname = f"{repo_short}_#{run_number}_{norm_abi}.apk"
     save_p = os.path.join(save_dir or DEFAULT_SAVE_DIR, fname)
     cache_p = os.path.join(APK_TEMP_CACHE_DIR, fname)
     if _is_valid_apk_file(save_p):
@@ -2695,7 +2754,9 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     title = r.get("display_title") or r.get("name") or "Build"
                     vtag = _extract_version_tag(title)
                     r_short = (cfg.get("repo") or DEFAULT_REPO).split("/")[-1]
-                    cached_apk_p = _find_existing_downloaded_apk(r_short, r.get("run_number"), cfg.get("save_dir") or DEFAULT_SAVE_DIR)
+                    sdir_cur = cfg.get("save_dir") or DEFAULT_SAVE_DIR
+                    cached_apk_64 = _find_existing_downloaded_apk(r_short, r.get("run_number"), sdir_cur, "arm64")
+                    cached_apk_32 = _find_existing_downloaded_apk(r_short, r.get("run_number"), sdir_cur, "arm32")
                     item_dict = {
                         "id": r["id"],
                         "run_number": r.get("run_number"),
@@ -2706,8 +2767,12 @@ class BuilderHandler(BaseHTTPRequestHandler):
                         "full_sha": r.get("head_sha") or "",
                         "title": title,
                         "created_at": (r.get("created_at") or "").replace("T", " ")[:19],
-                        "apk_cached": bool(cached_apk_p),
-                        "apk_cached_path": cached_apk_p,
+                        "apk_cached": bool(cached_apk_64),
+                        "apk_cached_path": cached_apk_64,
+                        "apk_cached_arm64": bool(cached_apk_64),
+                        "apk_cached_path_arm64": cached_apk_64,
+                        "apk_cached_arm32": bool(cached_apk_32),
+                        "apk_cached_path_arm32": cached_apk_32,
                         "artifact_ready": (r.get("conclusion") == "success"),
                     }
                     runs_list.append(item_dict)
@@ -3056,6 +3121,7 @@ class BuilderHandler(BaseHTTPRequestHandler):
                 run_number = data.get("run_number") or run_id
                 force_redl = bool(data.get("force_redownload", False))
                 auto_inst = bool(data.get("auto_install", False))
+                abi = _normalize_apk_abi(data.get("abi") or "arm64")
                 save_dir = (data.get("save_dir") or cfg.get("save_dir") or DEFAULT_SAVE_DIR).strip()
                 res = download_apk_core(
                     run_id=run_id,
@@ -3064,11 +3130,12 @@ class BuilderHandler(BaseHTTPRequestHandler):
                     force_redl=force_redl,
                     token=cfg.get("token") or "",
                     repo=cfg.get("repo") or DEFAULT_REPO,
+                    abi=abi,
                 )
                 if res.get("status") == "ok" and auto_inst and res.get("apk_path"):
                     shown_ov = _show_native_apk_overlay(
                         res["apk_path"],
-                        f"📥 Загрузка APK #{run_number} завершена!",
+                        f"📥 Загрузка APK #{run_number} ({abi}) завершена!",
                         only_when_bg=True,
                     )
                     res["overlay_shown"] = bool(shown_ov)
